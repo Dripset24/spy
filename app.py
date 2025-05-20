@@ -10,10 +10,6 @@ model = joblib.load("spy_xgb_model 2.pkl")
 # Create the Flask app
 app = Flask(__name__)
 
-@app.route('/predict', methods=['GET'])
-def index():
-	return "ML API is Live. Use POST /predict to test."
-
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
