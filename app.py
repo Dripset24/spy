@@ -3,7 +3,7 @@ import pandas as pd
 import joblib
 
 # Load your trained model
-model = joblib.load("spy_xgb_model_2.pkl")  # Make sure this file is in the same directory
+model = joblib.load("spy_xgb_model 2.pkl")  # Make sure this file is in the same directory
 
 # Create the Flask app
 app = Flask(__name__)
