@@ -8,6 +8,11 @@ model = joblib.load("spy_xgb_model 2.pkl")  # Make sure this file is in the same
 # Create the Flask app
 app = Flask(__name__)
 
+@app.route('/')
+def home():
+    return "✅ SPY model API is live!"
+
+
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
