@@ -8,16 +8,19 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "✅ Model is live"
+    return "✅ SPY model API is live"
 
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
         data = request.get_json()
-        df = pd.DataFrame(data)
+        print("Received JSON:", data)  # <- DEBUG LOG
 
-        # Convert to float32 to match model expectations
+        df = pd.DataFrame(data)
+        print("Converted to DataFrame:", df)
+
         df = df.astype(np.float32)
+        print("Converted to float32")
 
         prob = model.predict_proba(df)[0][1]
         label = int(prob > 0.5)
@@ -26,7 +29,9 @@ def predict():
             "prediction": label,
             "confidence": round(float(prob), 4)
         })
+
     except Exception as e:
+        print("Error:", str(e))  # <- LOG ERROR
         return jsonify({"error": str(e)}), 400
 
 if __name__ == "__main__":
