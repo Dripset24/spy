@@ -3,7 +3,7 @@ import pandas as pd
 import joblib
 import numpy as np
 
-model = joblib.load("spy_xgb_model 2.pkl")
+model = joblib.load("spy_xgb_model_real_sample.pkl")
 app = Flask(__name__)
 
 @app.route("/")
