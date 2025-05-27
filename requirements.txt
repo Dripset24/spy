@@ -1,5 +1,6 @@
-flask
+yfinance
 pandas
 xgboost
 scikit-learn
 joblib
+requests
