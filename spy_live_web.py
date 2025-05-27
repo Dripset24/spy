@@ -1,13 +1,13 @@
+
 import pandas as pd
-import time
 import yfinance as yf
+import numpy as np
+import time
 import joblib
 import requests
 from datetime import datetime
-from flask import Flask
-import threading
-
-app = Flask(__name__)
+from ta.volume import OnBalanceVolumeIndicator
+from ta.trend import PSARIndicator
 
 DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1375065109289893978/t5_rOsW7o5MHZNaJY8KrjkW1PRCYGSUShm_TTlv4OM1QG4-ROfynKd_-nnzAOLMhEXEp"
 
@@ -29,12 +29,34 @@ last_exit_time = None
 cooldown_minutes = 15
 active_position = {}
 
-def get_vix_level():
-    try:
-        vix = yf.Ticker("^VIX").history(period="1d", interval="1m")
-        return round(vix['Close'].iloc[-1], 2) if not vix.empty else None
-    except:
-        return None
+def fetch_data(ticker):
+    df = yf.download(ticker, period="2d", interval="1m").dropna()
+    df["obv"] = OnBalanceVolumeIndicator(close=df["Close"], volume=df["Volume"]).on_balance_volume()
+    df["psar"] = PSARIndicator(high=df["High"], low=df["Low"], close=df["Close"]).psar()
+    df["SAR_bullish"] = df["Close"] > df["psar"]
+    return df
+
+def engineer_features(spy, qqq, xlk, xlf):
+    df = pd.DataFrame()
+    df["obv"] = spy["obv"]
+    df["SPY_volume"] = spy["Volume"]
+    df["QQQ_volume_x"] = qqq["Volume"]
+    df["XLF_volume_x"] = xlf["Volume"]
+    df["volume_range"] = spy["High"] - spy["Low"]
+    df["XLK_volume_x"] = xlk["Volume"]
+    df["volume_avg_10"] = spy["Volume"].rolling(10).mean()
+    df["volume_avg_20"] = spy["Volume"].rolling(20).mean()
+    df["vol_divergence"] = spy["Volume"] - spy["Volume"].shift(1)
+    df["liquidity_proxy"] = spy["Volume"] * (spy["High"] - spy["Low"])
+    df["volume"] = spy["Volume"]
+    df["volume_QQQ"] = qqq["Volume"]
+    df["QQQ_volume_y"] = qqq["Volume"].rolling(2).mean()
+    df["atr_x_volume"] = (spy["High"] - spy["Low"]) * spy["Volume"]
+    df["XLF_volume_y"] = xlf["Volume"].rolling(2).mean()
+    df["volume_XLF"] = xlf["Volume"]
+    df["SAR_confirmed"] = spy["SAR_bullish"] & qqq["SAR_bullish"] & xlk["SAR_bullish"]
+    df["playbook_strategy"] = "Scalp Reversal"
+    return df.dropna()
 
 def get_best_spy_0dte_option(signal_type='CALL'):
     try:
@@ -55,7 +77,7 @@ def get_best_spy_0dte_option(signal_type='CALL'):
             'url': f"https://robinhood.com/options/{symbol}"
         }
     except Exception as e:
-        print("⚠️ Option selection failed:", e)
+        print("â ï¸ Option selection failed:", e)
         return None
 
 def send_discord_alert(strategy, price, signal_type, contract):
@@ -69,102 +91,65 @@ def send_discord_alert(strategy, price, signal_type, contract):
     try:
         requests.post(DISCORD_WEBHOOK, json={"content": msg})
     except Exception as e:
-        print("❌ ALERT ERROR:", e)
+        print("â ALERT ERROR:", e)
 
-def predict_and_alert():
+def predict_and_alert(latest):
     global last_entry_time, last_exit_time, active_position
+
+    strategy = latest['playbook_strategy']
+    model = models.get(strategy)
+    if model is None:
+        return
+
     try:
-        df = pd.read_csv("Tier30_Live_Scored_Output_16Features.csv")
-        latest = df.dropna().iloc[-1]
-        strategy = latest['playbook_strategy']
-        model = models.get(strategy)
-        if model is None:
-            return
         input_data = latest[model_features].astype(float)
         input_data['obv'] = input_data['obv'] / 1e6
-        for col in model_features:
-            q_low = df[col].quantile(0.01)
-            q_high = df[col].quantile(0.99)
-            input_data[col] = input_data[col].clip(q_low, q_high)
-        input_df = pd.DataFrame([input_data.values], columns=model_features)
+        input_df = pd.DataFrame([input_data], columns=model_features)
         signal = model.predict(input_df)[0]
-
-        spy_price = yf.Ticker("SPY").history(period="1d", interval="1m")['Close'].iloc[-1]
-        now = datetime.now()
-        vix = get_vix_level()
-        cooldown_entry_ok = not last_entry_time or (now - last_entry_time).total_seconds() > cooldown_minutes * 60
-        cooldown_exit_ok = not last_exit_time or (now - last_exit_time).total_seconds() > cooldown_minutes * 60
-
-        print(f"[{now.strftime('%H:%M:%S')}] {strategy} | Signal: {signal} | SPY: {spy_price:.2f} | VIX: {vix}")
-
-        if signal == 1 and cooldown_entry_ok:
-            contract = get_best_spy_0dte_option('CALL')
-            if contract:
-                send_discord_alert(strategy, spy_price, "entry", contract)
-                active_position.update({
-                    "symbol": contract['symbol'],
-                    "entry_price": contract['lastPrice'],
-                    "type": "CALL",
-                    "partial_tp_hit": False
-                })
-                last_entry_time = now
-        elif signal == -1 and cooldown_exit_ok:
-            contract = get_best_spy_0dte_option('PUT')
-            if contract:
-                send_discord_alert(strategy, spy_price, "exit", contract)
-                active_position.update({
-                    "symbol": contract['symbol'],
-                    "entry_price": contract['lastPrice'],
-                    "type": "PUT",
-                    "partial_tp_hit": False
-                })
-                last_exit_time = now
     except Exception as e:
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❌ Prediction Loop Error: {e}")
+        print(f"â Prediction error: {e}")
+        return
 
-def check_pnl_trigger():
-    global active_position
+    spy_price = yf.Ticker("SPY").history(period="1d", interval="1m")['Close'].iloc[-1]
+    now = datetime.now()
+    cooldown_entry_ok = not last_entry_time or (now - last_entry_time).total_seconds() > cooldown_minutes * 60
+    cooldown_exit_ok = not last_exit_time or (now - last_exit_time).total_seconds() > cooldown_minutes * 60
+
+    print(f"[{now.strftime('%H:%M:%S')}] {strategy} | Signal: {signal} | SPY: {spy_price:.2f}")
+
+    if signal == 1 and cooldown_entry_ok:
+        contract = get_best_spy_0dte_option('CALL')
+        if contract:
+            send_discord_alert(strategy, spy_price, "entry", contract)
+            active_position.update({
+                "symbol": contract['symbol'],
+                "entry_price": contract['lastPrice'],
+                "type": "CALL",
+                "partial_tp_hit": False
+            })
+            last_entry_time = now
+    elif signal == -1 and cooldown_exit_ok:
+        contract = get_best_spy_0dte_option('PUT')
+        if contract:
+            send_discord_alert(strategy, spy_price, "exit", contract)
+            active_position.update({
+                "symbol": contract['symbol'],
+                "entry_price": contract['lastPrice'],
+                "type": "PUT",
+                "partial_tp_hit": False
+            })
+            last_exit_time = now
+
+# Main loop
+while True:
     try:
-        if not active_position:
-            return
-        symbol = active_position["symbol"]
-        entry_price = active_position["entry_price"]
-        option_type = active_position["type"]
-        partial_hit = active_position["partial_tp_hit"]
-        strike = int(symbol[11:16])
-        expiry = datetime.today().strftime('%Y-%m-%d')
-        chain = yf.Ticker("SPY").option_chain(expiry)
-        options = chain.calls if option_type == "CALL" else chain.puts
-        match = options[options["strike"] == strike]
-        if match.empty:
-            return
-        current_price = match["lastPrice"].values[0]
-        change = (current_price - entry_price) / entry_price * 100
-        if change >= 30:
-            requests.post(DISCORD_WEBHOOK, json={"content": f"**FINAL TP HIT (+30%)**: {symbol} | Entry: {entry_price:.2f} → Now: {current_price:.2f}"})
-            active_position.clear()
-        elif change >= 15 and not partial_hit:
-            requests.post(DISCORD_WEBHOOK, json={"content": f"**PARTIAL TP HIT (+15%)**: {symbol} | Entry: {entry_price:.2f} → Now: {current_price:.2f}"})
-            active_position["partial_tp_hit"] = True
-        elif change <= -20:
-            requests.post(DISCORD_WEBHOOK, json={"content": f"**STOP HIT (-20%)**: {symbol} | Entry: {entry_price:.2f} → Now: {current_price:.2f}"})
-            active_position.clear()
+        spy = fetch_data("SPY")
+        qqq = fetch_data("QQQ")
+        xlk = fetch_data("XLK")
+        xlf = fetch_data("XLF")
+        df = engineer_features(spy, qqq, xlk, xlf)
+        latest = df.iloc[-1]
+        predict_and_alert(latest)
     except Exception as e:
-        print("PnL tracking error:", e)
-
-# Background loop
-def run_loop():
-    while True:
-        predict_and_alert()
-        check_pnl_trigger()
-        time.sleep(60)
-
-@app.route('/')
-def home():
-    return "SPY Trading Bot Live"
-
-# Start loop in background
-threading.Thread(target=run_loop, daemon=True).start()
-
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=10000)
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] â Loop Error: {e}")
+    time.sleep(60)
