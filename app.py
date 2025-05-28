@@ -19,12 +19,14 @@ model_features = [
     'atr_x_volume', 'XLF_volume_y', 'volume_XLF'
 ]
 
+# Load models
 models = {
     "Scalp Reversal": joblib.load("Scalp_Reversal_Top16_Model.joblib"),
     "Trend Follow": joblib.load("Trend_Follow_Top16_Model.joblib"),
     "Volatility Breakout": joblib.load("Volatility_Breakout_Top16_Model.joblib")
 }
 
+# --- Feature Engineering ---
 def fetch_data(ticker):
     df = yf.download(ticker, period="2d", interval="1m").dropna()
     df["obv"] = OnBalanceVolumeIndicator(close=df["Close"], volume=df["Volume"]).on_balance_volume()
@@ -57,6 +59,7 @@ def engineer_features(spy, qqq, xlk, xlf):
 def get_spy_price():
     return round(yf.Ticker("SPY").history(period="1d", interval="1m")["Close"].iloc[-1], 2)
 
+# --- Alerts ---
 def send_discord_alert(strategy, signal, confidence, spy_price):
     msg = (
         f"**Prediction Alert**\n"
@@ -70,6 +73,7 @@ def send_discord_alert(strategy, signal, confidence, spy_price):
     except Exception as e:
         print("❌ Discord error:", e)
 
+# --- Flask Routes ---
 @app.route('/')
 def root():
     return "✅ SPY 0DTE Prediction Web Service is Running"
@@ -77,6 +81,7 @@ def root():
 @app.route('/predict', methods=['GET'])
 def predict():
     try:
+        # Fetch & engineer
         spy = fetch_data("SPY")
         qqq = fetch_data("QQQ")
         xlk = fetch_data("XLK")
@@ -84,16 +89,20 @@ def predict():
         df = engineer_features(spy, qqq, xlk, xlf)
         latest = df.iloc[-1]
 
+        # Prep input
         strategy = latest["playbook_strategy"]
         model = models[strategy]
-        input_data = latest[model_features].astype(float)
-        input_data["obv"] = input_data["obv"] / 1e6
-        input_df = pd.DataFrame([input_data], columns=model_features)
 
+        input_array = np.array(latest[model_features].astype(float)).flatten()
+        input_array[model_features.index("obv")] = input_array[model_features.index("obv")] / 1e6
+        input_df = pd.DataFrame([input_array], columns=model_features)
+
+        # Predict
         signal = model.predict(input_df)[0]
-        confidence = model.predict_proba(input_df).max()
+        confidence = model.predict_proba(input_df)[0][int(signal)]
         spy_price = get_spy_price()
 
+        # Send alert
         send_discord_alert(strategy, signal, confidence, spy_price)
 
         return jsonify({
@@ -107,5 +116,6 @@ def predict():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# --- Start app ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
