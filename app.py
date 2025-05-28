@@ -1,7 +1,6 @@
 from flask import Flask, jsonify
 import yfinance as yf
 import pandas as pd
-import numpy as np
 import joblib
 import requests
 from datetime import datetime
@@ -10,8 +9,10 @@ from ta.trend import PSARIndicator
 
 app = Flask(__name__)
 
+# --- Discord Webhook ---
 DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1375065109289893978/t5_rOsW7o5MHZNaJY8KrjkW1PRCYGSUShm_TTlv4OM1QG4-ROfynKd_-nnzAOLMhEXEp"
 
+# --- Features and Models ---
 model_features = [
     'obv', 'SPY_volume', 'QQQ_volume_x', 'XLF_volume_x', 'volume_range',
     'XLK_volume_x', 'volume_avg_10', 'volume_avg_20', 'vol_divergence',
@@ -25,6 +26,7 @@ models = {
     "Volatility Breakout": joblib.load("Volatility_Breakout_Top16_Model.joblib")
 }
 
+# --- Data Prep ---
 def fetch_data(ticker):
     df = yf.download(ticker, period="2d", interval="1m").dropna()
     df["obv"] = OnBalanceVolumeIndicator(close=df["Close"], volume=df["Volume"]).on_balance_volume()
@@ -42,7 +44,7 @@ def engineer_features(spy, qqq, xlk, xlf):
     df["XLK_volume_x"] = xlk["Volume"]
     df["volume_avg_10"] = spy["Volume"].rolling(10).mean()
     df["volume_avg_20"] = spy["Volume"].rolling(20).mean()
-    df["vol_divergence"] = spy["Volume"] - spy["Volume"].shift(1)
+    df["vol_divergence"] = spy["Volume"].diff()
     df["liquidity_proxy"] = spy["Volume"] * (spy["High"] - spy["Low"])
     df["volume"] = spy["Volume"]
     df["volume_QQQ"] = qqq["Volume"]
@@ -70,38 +72,40 @@ def send_discord_alert(strategy, signal, confidence, spy_price):
     except Exception as e:
         print("❌ Discord error:", e)
 
+# --- Routes ---
 @app.route('/')
-def root():
+def home():
     return "✅ SPY 0DTE Prediction Web Service is Running"
 
 @app.route('/predict', methods=['GET'])
 def predict():
     try:
+        # Live data
         spy = fetch_data("SPY")
         qqq = fetch_data("QQQ")
         xlk = fetch_data("XLK")
         xlf = fetch_data("XLF")
+
         df = engineer_features(spy, qqq, xlk, xlf)
         latest = df.iloc[-1]
 
         strategy = latest["playbook_strategy"]
         model = models[strategy]
 
-        # Convert to dict, then to DataFrame to avoid shape errors
+        # FIXED: Ensure proper 2D format for model
         input_data = latest[model_features].astype(float).to_dict()
-        input_data["obv"] = input_data["obv"] / 1e6
         input_df = pd.DataFrame([input_data])
 
-        signal = model.predict(input_df)[0]
-        confidence = model.predict_proba(input_df)[0].max()
+        signal = int(model.predict(input_df)[0])
+        confidence = float(model.predict_proba(input_df).max())
         spy_price = get_spy_price()
 
         send_discord_alert(strategy, signal, confidence, spy_price)
 
         return jsonify({
             "strategy": strategy,
-            "signal": int(signal),
-            "confidence": round(float(confidence), 4),
+            "signal": signal,
+            "confidence": round(confidence, 4),
             "spy_price": spy_price,
             "timestamp": datetime.now().isoformat()
         })
@@ -109,5 +113,6 @@ def predict():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# --- Launch ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
