@@ -1,6 +1,6 @@
 from flask import Flask, jsonify
-import pandas as pd
 import yfinance as yf
+import pandas as pd
 import numpy as np
 import joblib
 import requests
@@ -54,39 +54,28 @@ def engineer_features(spy, qqq, xlk, xlf):
     df["playbook_strategy"] = "Scalp Reversal"
     return df.dropna()
 
-def get_best_spy_0dte_option(signal_type='CALL'):
-    spy = yf.Ticker("SPY")
-    spy_price = spy.history(period="1d", interval="1m")['Close'].iloc[-1]
-    expiry = datetime.today().strftime('%Y-%m-%d')
-    options = spy.option_chain(expiry).calls if signal_type == 'CALL' else spy.option_chain(expiry).puts
-    options['strike_diff'] = abs(options['strike'] - spy_price)
-    best = options.sort_values(by=['strike_diff', 'volume', 'openInterest'], ascending=[True, False, False]).iloc[0]
-    symbol = f"SPY{expiry.replace('-', '')}{int(best['strike']):05d}{'C' if signal_type == 'CALL' else 'P'}"
-    return {
-        'symbol': symbol,
-        'strike': best['strike'],
-        'lastPrice': best['lastPrice'],
-        'volume': best['volume'],
-        'openInterest': best['openInterest'],
-        'url': f"https://robinhood.com/options/{symbol}"
-    }
+def get_spy_price():
+    return round(yf.Ticker("SPY").history(period="1d", interval="1m")["Close"].iloc[-1], 2)
 
-def send_discord_alert(strategy, price, signal_type, contract):
+def send_discord_alert(strategy, signal, confidence, spy_price):
     msg = (
-        f"**{signal_type.upper()} ALERT**\n"
-        f"Strategy: `{strategy}`\nPrice: ${price:.2f}\n"
-        f"Contract: `{contract['symbol']}` | Strike: {contract['strike']} | LTP: ${contract['lastPrice']:.2f}\n"
-        f"Volume: {contract['volume']} | OI: {contract['openInterest']}\n"
-        f"[Robinhood Link]({contract['url']})\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"**Prediction Alert**\n"
+        f"Strategy: `{strategy}`\n"
+        f"Signal: `{signal}` | Confidence: `{confidence:.2%}`\n"
+        f"SPY Price: `${spy_price}`\n"
+        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
-    requests.post(DISCORD_WEBHOOK, json={"content": msg})
+    try:
+        requests.post(DISCORD_WEBHOOK, json={"content": msg})
+    except Exception as e:
+        print("❌ Discord error:", e)
 
-@app.route("/")
-def home():
-    return "SPY 0DTE Prediction Web Service is Running"
+@app.route('/')
+def root():
+    return "✅ SPY 0DTE Prediction Web Service is Running"
 
-@app.route("/run")
-def run_model():
+@app.route('/predict', methods=['GET'])
+def predict():
     try:
         spy = fetch_data("SPY")
         qqq = fetch_data("QQQ")
@@ -94,18 +83,29 @@ def run_model():
         xlf = fetch_data("XLF")
         df = engineer_features(spy, qqq, xlk, xlf)
         latest = df.iloc[-1]
-        strategy = latest['playbook_strategy']
+
+        strategy = latest["playbook_strategy"]
         model = models[strategy]
         input_data = latest[model_features].astype(float)
-        input_data['obv'] = input_data['obv'] / 1e6
+        input_data["obv"] = input_data["obv"] / 1e6
         input_df = pd.DataFrame([input_data], columns=model_features)
+
         signal = model.predict(input_df)[0]
-        spy_price = spy['Close'].iloc[-1]
-        contract = get_best_spy_0dte_option('CALL' if signal == 1 else 'PUT')
-        send_discord_alert(strategy, spy_price, "entry" if signal == 1 else "exit", contract)
-        return jsonify({"signal": int(signal), "strategy": strategy, "contract": contract})
+        confidence = model.predict_proba(input_df).max()
+        spy_price = get_spy_price()
+
+        send_discord_alert(strategy, signal, confidence, spy_price)
+
+        return jsonify({
+            "strategy": strategy,
+            "signal": int(signal),
+            "confidence": round(float(confidence), 4),
+            "spy_price": spy_price,
+            "timestamp": datetime.now().isoformat()
+        })
+
     except Exception as e:
-        return jsonify({"error": str(e)})
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
