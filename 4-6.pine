@@ -1,0 +1,32 @@
+// Merged Pine Script Strategy
+//@version=5
+strategy("Merged Strategy", overlay=true)
+
+// Clean Entry Signals
+NAMA = 0; // Implement your NAMA logic here
+ignition = 0; // Implement your ignition logic here
+regime_flip = 0; // Logic for regime flips
+entry_signal = NAMA or ignition or regime_flip;
+
+// Full Indicator Suite
+macdLine = ta.macd(close, 12, 26, 9) // MACD
+;
+
+DPO = 0; // Implement DPO logic
+TTM = 0; // TTM logic
+rsi = ta.rsi(close, 14);
+DMI = 0; // DMI X3 logic
+VFI = 0; // VFI X3 logic
+PSAR = ta.sar(0.02, 0.2);
+SuperTrend = 0; // SuperTrend logic
+ATR = ta.atr(14);
+
+// Volume Profile (sentiment, S&D, POC/VAH/VAL, gaps)
+
+// Dashboard
+
+// Fibonacci Levels as visuals only
+
+// Executing trade based on entry signal
+if entry_signal
+    strategy.entry("Long", strategy.long)
