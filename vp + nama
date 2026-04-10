@@ -1,0 +1,996 @@
+//@version=6
+strategy("MACD+VWMACD+DPO+TTM+SMA50+VWAP+MF+DMIx3+VFIx3+ATRx3+PSARx3d+$ADD+$TRIN+$VOLD + Volume Profile", 
+         overlay=true, 
+         pyramiding=0,
+         default_qty_type=strategy.percent_of_equity, 
+         default_qty_value=100,
+         initial_capital=10000,
+         commission_type=strategy.commission.percent,
+         commission_value=0.05,
+         slippage=3,
+         max_boxes_count=500, 
+         max_lines_count=500, 
+         max_bars_back=5000)
+
+//=== FEATURE TOGGLES ===
+useHTFConfirm = input.bool(false, "🔵 Use HTF Confirmation", group="FILTERS")
+useInternalDiv = input.bool(false, "🟢 Use Internals Divergence", group="FILTERS")
+useSessionBias = input.bool(false, "🟡 Use Session-Based Sizing", group="FILTERS")
+showDashboard = input.bool(true, "📊 Show Dashboard", group="UI")
+showVolumeProfile = input.bool(true, "📈 Show Volume Profile", group="UI")
+showLabels = input.bool(true, "Show Entry/Exit Labels", group="UI")
+showCloudPercent = input.bool(true, "Show Cloud %", group="UI")
+showFibonacci = input.bool(true, "Show Fibonacci Levels", group="UI")
+
+//=== RISK MANAGEMENT ===
+basePosSize = input.float(5.0, "Base Position Size %", minval=0.5, maxval=20, group="RISK")
+maxHoldBars = input.int(50, "Max Hold Bars", minval=5, maxval=100, group="RISK")
+
+//=== NAMA SETTINGS ===
+namaLen = input.int(20, "NAMA Length", minval=10, maxval=50, group="NAMA")
+atrMul = input.float(5.0, "NAMA ATR Multiplier", step=0.1, minval=0, group="NAMA")
+emaLen = input.int(24, "EMA Length", minval=10, maxval=50, group="NAMA")
+htfTimeframe = input.string("60", "HTF Timeframe", options=["30", "60", "120", "240", "D"], group="HTF")
+
+// Internals
+addSymbol = input.string("USI:ADD", "ADD Symbol", group="INTERNALS")
+internalsLookback = input.int(20, "Internals Lookback", minval=10, maxval=50, group="INTERNALS")
+internalsEmaLen = input.int(8, "Internals EMA Length", minval=3, maxval=20, group="INTERNALS")
+
+// Trading Hours (Central Time)
+tradingHourStart = input.int(8, "Trading Hour Start (Central)", minval=0, maxval=23, group="SESSION")
+tradingHourEnd = input.int(15, "Trading Hour End (Central)", minval=0, maxval=23, group="SESSION")
+tradingMinStart = input.int(30, "Trading Minute Start", minval=0, maxval=59, group="SESSION")
+timezoneOffset = input.int(-1, "Timezone Offset from Central (hours)", minval=-12, maxval=12, group="SESSION")
+
+//=== FIBONACCI SETTINGS ===
+swingLookback = input.int(50, "Swing High/Low Lookback", minval=20, maxval=100, group="FIBONACCI")
+
+//=== VOLUME PROFILE SETTINGS ===
+vpGR = "Volume & Sentiment Profile"
+
+vpSH = input.bool(true, "Volume Profile", group=vpGR)
+vpUC = input.color(color.new(#5d606b, 50), "  Up Volume  ", inline="VP", group=vpGR)
+vpDC = input.color(color.new(#d1d4dc, 50), "Down Volume ", inline="VP", group=vpGR)
+
+vaUC = input.color(color.new(#2962ff, 30), "  Value Area Up", inline="VA", group=vpGR)
+vaDC = input.color(color.new(#fbc02d, 30), "Value Area Down", inline="VA", group=vpGR)
+
+spSH = input.bool(true, "Sentiment Profile", group=vpGR)
+spUC = input.color(color.new(#26a69a, 30), "  Bullish", inline="BB", group=vpGR)
+spDC = input.color(color.new(#ef5350, 30), " Bearish", inline="BB", group=vpGR)
+
+sdSH = input.bool(true, "Supply & Demand Zones", group=vpGR)
+sdTH = input.int(15, "  Supply & Demand Threshold %", minval=0, maxval=41, group=vpGR, display=display.none) / 100
+sdSC = input.color(color.new(#ec1313, 80), "  Supply Zones", inline="SD", group=vpGR)
+sdDC = input.color(color.new(#0094FF, 80), "Demand Zones", inline="SD", group=vpGR)
+
+vgSH = input.bool(true, "Volume Profile Gaps", inline="vnT", group=vpGR)
+vgC = input.color(color.new(#ff9800, 80), "", inline="vnT", group=vpGR)
+vgNoN = input.int(7, "  Node Detection %", minval=0, maxval=100, display=display.none, group=vpGR) / 100
+
+pcSH = input.string("Developing POC", "Point of Control", options=["None", "Developing POC", "Last Line"], inline="POC", group=vpGR, display=display.none)
+pocC = input.color(#f44336, "", inline="POC", group=vpGR)
+pocW = input.int(2, "", minval=1, inline="POC", group=vpGR, display=display.none)
+
+vpVA = input.float(68, "Value Area (%)", minval=0, maxval=100, group=vpGR, display=display.none) / 100
+
+vahS = input.bool(true, "Value Area High (VAH)", inline="VAH", group=vpGR)
+vahC = input.color(#2962ff, "", inline="VAH", group=vpGR)
+vahW = input.int(1, "", minval=1, inline="VAH", group=vpGR, display=display.none)
+
+vlSH = input.bool(true, "Value Area Low (VAL)", inline="VAL", group=vpGR)
+valC = input.color(#2962ff, "", inline="VAL", group=vpGR)
+valW = input.int(1, "", minval=1, inline="VAL", group=vpGR, display=display.none)
+
+vpPT = input.string("Bar Polarity", "Profile Polarity Method", options=["Bar Polarity", "Bar Buying Selling Pressure"], display=display.none, group=vpGR)
+vsPT = vpPT == "Bar Polarity"
+
+vpLR = input.string("Fixed Range", "Profile Lookback Range", options=["Fixed Range", "Visible Range"], display=display.none, group=vpGR)
+vpRL = vpLR == "Visible Range"
+
+vpLN = input.int(360, "  Fixed Range Length", minval=10, maxval=5000, step=10, display=display.none, group=vpGR)
+vpLN := last_bar_index < vpLN ? last_bar_index : vpLN - 1
+
+vpST = input.bool(true, "Profile Stats", inline="STT", group=vpGR)
+ppLS = input.string("Small", "", options=["Tiny", "Small", "Normal"], inline="STT", group=vpGR, display=display.none)
+lcDB = input.string("Top Right", "", options=["Top Right", "Middle Right", "Bottom Left"], inline="STT", group=vpGR, display=display.none)
+
+vpLV = input.bool(true, "Profile Price Levels", inline="BBe", group=vpGR)
+rpLS = input.string("Small", "", options=["Tiny", "Small", "Normal"], inline="BBe", group=vpGR, display=display.none)
+
+vpPL = input.string("Right", "Profile Placement", options=["Right", "Left"], group=vpGR, display=display.none)
+vpRT = vpPL == "Right"
+vpNR = input.int(100, "Profile Number of Rows", minval=10, maxval=150, step=10, group=vpGR, display=display.none)
+vpWD = input.float(31, "Profile Width (%)", minval=0, maxval=250, group=vpGR, display=display.none) / 100
+vpHO = input.int(13, "Profile Horizontal Offset", maxval=50, group=vpGR, display=display.none)
+
+vaBG = input.bool(false, "Value Area Background  ", inline="vBG", group=vpGR)
+vBGC = input.color(color.new(#2962ff, 89), "", inline="vBG", group=vpGR)
+
+vpBG = input.bool(false, "Profile Range Background ", inline="pBG", group=vpGR)
+bgC = input.color(color.new(#2962ff, 95), "", inline="pBG", group=vpGR)
+
+vhGR = "Volume Histogram"
+
+vhSH = input.bool(true, "Volume Histogram", group=vhGR)
+vmaS = input.bool(true, "Volume MA,         Length", inline="vol2", group=vhGR)
+vmaL = input.int(21, "", minval=1, inline="vol2", group=vhGR, display=display.none)
+vhUC = input.color(color.new(#26a69a, 30), "  Growing", inline="vol1", group=vhGR)
+vhDC = input.color(color.new(#ef5350, 30), "Falling", inline="vol1", group=vhGR)
+vmaC = input.color(color.new(#2962ff, 0), "Volume MA", inline="vol1", group=vhGR)
+vhPL = input.string("Top", "  Placement", options=["Top", "Bottom"], group=vhGR, display=display.none)
+vhLP = vhPL == "Top"
+vhHT = 11 - input.int(8, "  Height", minval=1, maxval=10, group=vhGR, display=display.none)
+vhVO = input.int(1, "  Vertical Offset", minval=0, maxval=20, group=vhGR, display=display.none) / 20
+
+//=== HELPER INDICATOR SETTINGS ===
+fastLen = input.int(7, "MACD Fast", group="INDICATORS")
+slowLen = input.int(20, "MACD Slow", group="INDICATORS")
+sigLen = input.int(9, "MACD Signal", group="INDICATORS")
+dpoLen = input.int(20, "DPO Length", group="INDICATORS")
+smaLen = input.int(50, "SMA Length", group="INDICATORS")
+ttmMomLen = input.int(11, "TTM Momentum Length", group="INDICATORS")
+rsiLen = input.int(12, "RSI Length", group="INDICATORS")
+rsiBullLevel = input.float(55.0, "RSI Bull Level", group="INDICATORS")
+rsiBearLevel = input.float(34.0, "RSI Bear Level", group="INDICATORS")
+
+dmiFastLen = input.int(8, "DMI Fast Length", group="INDICATORS")
+dmiAvgLen = input.int(14, "DMI Avg Length", group="INDICATORS")
+dmiSlowLen = input.int(21, "DMI Slow Length", group="INDICATORS")
+adxThresh = input.float(20.0, "ADX Trend Threshold", group="INDICATORS")
+
+vfiFastLen = input.int(16, "VFI Fast Length", group="INDICATORS")
+vfiAvgLen = input.int(18, "VFI Avg Length", group="INDICATORS")
+vfiSlowLen = input.int(30, "VFI Slow Length", group="INDICATORS")
+vfiCoef = input.float(0.2, "VFI Coef", group="INDICATORS")
+vfiVolCap = input.float(2.5, "VFI Vol Cap", group="INDICATORS")
+
+psarFastStep = input.float(0.01, "PSAR Fast Step", group="INDICATORS")
+psarFastMax = input.float(0.10, "PSAR Fast Max", group="INDICATORS")
+psarAvgStep = input.float(0.02, "PSAR Avg Step", group="INDICATORS")
+psarAvgMax = input.float(0.20, "PSAR Avg Max", group="INDICATORS")
+psarSlowStep = input.float(0.03, "PSAR Slow Step", group="INDICATORS")
+psarSlowMax = input.float(0.30, "PSAR Slow Max", group="INDICATORS")
+
+supertrendAtrLen = input.int(14, "SuperTrend ATR Period", group="INDICATORS")
+supertrendMult = input.float(2.5, "SuperTrend Multiplier", group="INDICATORS")
+
+reactionLookback = input.int(6, "Reaction Lookback", group="INDICATORS")
+useDpoZeroBias = input.bool(true, "Use DPO Zero Bias", group="INDICATORS")
+requireTtmAgreement = input.bool(true, "Require TTM Agreement", group="INDICATORS")
+
+//=== CLOUD PERCENTAGE THRESHOLDS ===
+topReversalThresh = input.float(80.0, "Top Reversal % (Puts)", minval=50, maxval=100, group="CLOUD%")
+bottomReversalThresh = input.float(20.0, "Bottom Reversal % (Calls)", minval=0, maxval=50, group="CLOUD%")
+
+//=== VOLUME PROFILE TYPES ===
+type bar
+    float o = open
+    float h = high
+    float l = low
+    float c = close
+    float v = volume
+    int i = bar_index
+
+type barData
+    array<float> bh
+    array<float> bl
+    array<float> bv
+    array<bool> bp
+    array<int> bn
+
+type volData
+    array<float> vt
+    array<float> vb
+    array<float> vd
+
+type tVP
+    array<box> vp
+    array<chart.point> pPC
+    polyline dPC
+    int pcL
+    int laP
+    int lbP
+    int sI
+
+type tVH
+    array<line> vh
+    array<chart.point> pMA
+    polyline vMA
+
+//=== FUNCTIONS ===
+nama(src, len) =>
+    goldenRatio = 1.618
+    alpha = goldenRatio / 100
+    ma = ta.sma(src, len)
+    ma := na(ma[1]) ? ma : alpha * src + (1 - alpha) * ma[1]
+    ma
+
+dmiCalc(len) =>
+    upMove = high - high[1]
+    downMove = low[1] - low
+    plusDM = (upMove > downMove and upMove > 0) ? upMove : 0.0
+    minusDM = (downMove > upMove and downMove > 0) ? downMove : 0.0
+    trRma = ta.rma(ta.tr(true), len)
+    plus = 100 * ta.rma(plusDM, len) / math.max(trRma, 1e-10)
+    minus = 100 * ta.rma(minusDM, len) / math.max(trRma, 1e-10)
+    dx = 100 * math.abs(plus - minus) / math.max(plus + minus, 1e-10)
+    adx = ta.rma(dx, len)
+    [plus, minus, adx]
+
+vfiCalc(len, coef, volCap) =>
+    typical = hlc3
+    inter = math.log(typical) - math.log(typical[1])
+    cutoff = coef * ta.stdev(inter, len) * close
+    volAvg = ta.sma(volume, len)
+    maxVol = volAvg * volCap
+    cappedVol = math.min(volume, maxVol)
+    mf = typical - typical[1]
+    dir = mf > cutoff ? 1.0 : mf < -cutoff ? -1.0 : 0.0
+    raw = dir * cappedVol
+    ta.sma((ta.sma(raw, len) * len) / math.max(volAvg, 1e-10), 3)
+
+pine_supertrend(factor, atr) =>
+    src = hl2
+    upperBand = src + factor * atr
+    lowerBand = src - factor * atr
+    prevLowerBand = nz(lowerBand[1])
+    prevUpperBand = nz(upperBand[1])
+    lowerBand := lowerBand > prevLowerBand or close[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand := upperBand < prevUpperBand or close[1] > prevUpperBand ? upperBand : prevUpperBand
+    int _direction = na
+    float superTrend = na
+    prevSuperTrend = superTrend[1]
+    if na(atr[1])
+        _direction := 1
+    else if prevSuperTrend == prevUpperBand
+        _direction := close > upperBand ? -1 : 1
+    else
+        _direction := close < lowerBand ? 1 : -1
+    superTrend := _direction == -1 ? lowerBand : upperBand
+    [superTrend, _direction]
+
+cloudPercentage(price, top, bot) =>
+    cloudHeight = top - bot
+    priceInCloud = price - bot
+    percentage = (priceInCloud / cloudHeight) * 100
+    percentage
+
+f_drawLineX(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width) =>
+    var id = line.new(_x1, _y1, _x2, _y2, _xloc, _extend, _color, _style, _width)
+    line.set_xy1(id, _x1, _y1)
+    line.set_xy2(id, _x2, _y2)
+    line.set_color(id, _color)
+
+f_drawLabelX(_x, _y, _text, _color, _style, _textcolor, _size, _tooltip) =>
+    var lb = label.new(_x, _y, _text, xloc.bar_index, yloc.price, _color, _style, _textcolor, _size, text.align_left, _tooltip)
+    lb.set_xy(_x, _y)
+    lb.set_text(_text)
+    lb.set_tooltip(_tooltip)
+    lb.set_textcolor(_textcolor)
+
+getData(_ltf) =>
+    request.security_lower_tf(syminfo.tickerid, _ltf, bar.new(), ignore_invalid_timeframe=true)
+
+var string[] secTF = array.from("1S","5S","15S","30S")
+var string[] minTF = array.from("1","3","5","15","30","60","120","240","1D")
+
+f_gTF(_lookback) =>
+    int tfInSec = timeframe.in_seconds(timeframe.period)
+    int totalSec = tfInSec * _lookback
+    int mInSec = 60
+    if timeframe.isseconds
+        string result = "1S"
+        for tfStr in secTF
+            int ltfSec = timeframe.in_seconds(tfStr)
+            if totalSec / ltfSec < 5000
+                result := tfStr
+                break
+        result
+    else
+        int ltfSec = 1 * mInSec
+        result = timeframe.period
+        for tfStr in minTF
+            ltfSec := timeframe.in_seconds(tfStr)
+            if totalSec / ltfSec < 5000
+                result := tfStr
+                break
+        result
+
+f_gTS(_t) =>
+    switch _t
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Normal" => size.normal
+        => size.auto
+
+//=== VOLUME PROFILE VARIABLES ===
+var barData bD = barData.new(array.new<float>(na), array.new<float>(na), array.new<float>(na), array.new<bool>(na), array.new<int>(na))
+volData vD = volData.new(array.new<float>(vpNR, 0.), array.new<float>(vpNR, 0.), array.new<float>(vpNR, 0.))
+var tVP VP = tVP.new(array.new<box>(na), array.new<chart.point>(na), polyline.new(na), na, na, na, na)
+var tVH VH = tVH.new(array.new<line>(na), array.new<chart.point>(na), polyline.new(na))
+array<bar> ltfBD = array.new<bar>(1, bar.new())
+
+var float pHST = na
+var float pLST = na
+var string ltf = na
+
+//=== PERSISTENT VARIABLES FOR VP ===
+var float poc = na
+var float vaH = na
+var float vaL = na
+var int lastProcessedBar = -1
+
+//=== NAMA CALCULATIONS ===
+nama_val = nama(hlcc4, namaLen)
+namaAtrRange = nama(ta.tr, namaLen) * atrMul
+namaTop = nama_val + namaAtrRange
+namaBot = nama_val - namaAtrRange
+cloudPercent = cloudPercentage(close, namaTop, namaBot)
+
+ema24 = ta.ema(close, emaLen)
+emaDirection = ema24 > ema24[1] ? 1 : ema24 < ema24[1] ? -1 : 0
+emaRising = emaDirection == 1
+emaFalling = emaDirection == -1
+
+sma50 = ta.sma(close, smaLen)
+
+//=== FIBONACCI LEVELS ===
+swingHigh = ta.highest(high, swingLookback)
+swingLow = ta.lowest(low, swingLookback)
+swingRange = swingHigh - swingLow
+
+fib_0 = swingLow
+fib_236 = swingLow + swingRange * 0.236
+fib_382 = swingLow + swingRange * 0.382
+fib_500 = swingLow + swingRange * 0.500
+fib_618 = swingLow + swingRange * 0.618
+fib_786 = swingLow + swingRange * 0.786
+fib_1000 = swingHigh
+
+fib_1272 = swingHigh + swingRange * 0.272
+fib_1618 = swingHigh + swingRange * 0.618
+fib_2000 = swingHigh + swingRange * 1.000
+
+//=== REGIME LOGIC ===
+priceAboveNama = close > nama_val
+priceBelowNama = close < nama_val
+priceAboveEma = close > ema24
+priceBelowEma = close < ema24
+
+bullishTrendCondition = priceAboveNama and nama_val > ema24 and emaRising
+bullishChopAboveCondition = priceAboveNama and emaRising and not bullishTrendCondition
+bullishChopBetweenCondition = priceBelowNama and priceAboveEma and emaRising
+bearishTrendCondition = priceBelowNama and nama_val < ema24 and emaFalling
+bearishChopBelowCondition = priceBelowNama and emaFalling and not bearishTrendCondition
+bearishChopBetweenCondition = priceAboveNama and priceBelowEma and emaFalling
+
+var int persistentRegime = 0
+
+if bullishTrendCondition
+    persistentRegime := 1
+else if bullishChopAboveCondition
+    persistentRegime := 2
+else if bullishChopBetweenCondition
+    persistentRegime := 3
+else if bearishTrendCondition
+    persistentRegime := -1
+else if bearishChopBelowCondition
+    persistentRegime := -2
+else if bearishChopBetweenCondition
+    persistentRegime := -3
+
+bullTrend = persistentRegime == 1
+bullChopAbove = persistentRegime == 2
+bullChopBetween = persistentRegime == 3
+bearTrend = persistentRegime == -1
+bearChopBelow = persistentRegime == -2
+bearChopBetween = persistentRegime == -3
+
+bullTrendFlip = bullTrend and bullTrend[1] == false and persistentRegime[1] != 1
+bearTrendFlip = bearTrend and bearTrend[1] == false and persistentRegime[1] != -1
+
+//=== HELPER INDICATORS ===
+macdLine = ta.ema(close, fastLen) - ta.ema(close, slowLen)
+signalLine = ta.ema(macdLine, sigLen)
+macdHist = macdLine - signalLine
+histBull = macdHist > 0 and macdHist > macdHist[1]
+histBear = macdHist < 0 and macdHist < macdHist[1]
+macdBull = macdLine > signalLine
+macdBear = macdLine < signalLine
+
+dpoShift = math.floor(dpoLen / 2) + 1
+dpo = close[dpoShift] - ta.sma(close, dpoLen)
+dpoUp = dpo > dpo[1]
+dpoDown = dpo < dpo[1]
+
+ttmBase = ((ta.highest(high, ttmMomLen) + ta.lowest(low, ttmMomLen)) / 2 + ta.sma(close, ttmMomLen)) / 2
+ttmRaw = close - ttmBase
+ttmHist = ta.linreg(ttmRaw, ttmMomLen, 0)
+ttmCurlUp = ttmHist > ttmHist[1]
+ttmCurlDown = ttmHist < ttmHist[1]
+
+rsiVal = ta.rsi(close, rsiLen)
+rsiBull = rsiVal > rsiBullLevel and rsiVal >= rsiVal[1]
+rsiBear = rsiVal < rsiBearLevel and rsiVal <= rsiVal[1]
+
+[diPlusFast, diMinusFast, adxFast] = dmiCalc(dmiFastLen)
+[diPlusAvg, diMinusAvg, adxAvg] = dmiCalc(dmiAvgLen)
+[diPlusSlow, diMinusSlow, adxSlow] = dmiCalc(dmiSlowLen)
+
+fastBullDmi = diPlusFast > diMinusFast
+fastBearDmi = diMinusFast > diPlusFast
+avgBullDmi = diPlusAvg > diMinusAvg
+avgBearDmi = diMinusAvg > diPlusAvg
+slowBullDmi = diPlusSlow > diMinusSlow
+slowBearDmi = diMinusSlow > diPlusSlow
+
+bullDmiCount = (fastBullDmi ? 1 : 0) + (avgBullDmi ? 1 : 0) + (slowBullDmi ? 1 : 0)
+bearDmiCount = (fastBearDmi ? 1 : 0) + (avgBearDmi ? 1 : 0) + (slowBearDmi ? 1 : 0)
+dmiBullAgree = bullDmiCount >= 2
+dmiBearAgree = bearDmiCount >= 2
+
+vfiFast = vfiCalc(vfiFastLen, vfiCoef, vfiVolCap)
+vfiAvg = vfiCalc(vfiAvgLen, vfiCoef, vfiVolCap)
+vfiSlow = vfiCalc(vfiSlowLen, vfiCoef, vfiVolCap)
+
+vfiFastBull = vfiFast > vfiFast[1]
+vfiFastBear = vfiFast < vfiFast[1]
+vfiAvgBull = vfiAvg > vfiAvg[1] or vfiAvg > 0
+vfiAvgBear = vfiAvg < vfiAvg[1] or vfiAvg < 0
+vfiSlowBull = vfiSlow > vfiSlow[1] or vfiSlow > 0
+vfiSlowBear = vfiSlow < vfiSlow[1] or vfiSlow < 0
+
+vfiBullCount = (vfiFastBull ? 1 : 0) + (vfiAvgBull ? 1 : 0) + (vfiSlowBull ? 1 : 0)
+vfiBearCount = (vfiFastBear ? 1 : 0) + (vfiAvgBear ? 1 : 0) + (vfiSlowBear ? 1 : 0)
+vfiBullAgree = vfiBullCount >= 2
+vfiBearAgree = vfiBearCount >= 2
+
+psarFast = ta.sar(psarFastStep, psarFastStep, psarFastMax)
+psarAvg = ta.sar(psarAvgStep, psarAvgStep, psarAvgMax)
+psarSlow = ta.sar(psarSlowStep, psarSlowStep, psarSlowMax)
+
+psarFastBull = close > psarFast
+psarFastBear = close < psarFast
+psarAvgBull = close > psarAvg
+psarAvgBear = close < psarAvg
+psarSlowBull = close > psarSlow
+psarSlowBear = close < psarSlow
+
+psarBullCount = (psarFastBull ? 1 : 0) + (psarAvgBull ? 1 : 0) + (psarSlowBull ? 1 : 0)
+psarBearCount = (psarFastBear ? 1 : 0) + (psarAvgBear ? 1 : 0) + (psarSlowBear ? 1 : 0)
+psarBullAgree = psarBullCount >= 2
+psarBearAgree = psarBearCount >= 2
+
+supertrendAtr = ta.atr(supertrendAtrLen)
+[ST, dir] = pine_supertrend(supertrendMult, supertrendAtr)
+supertrendBull = dir == 1
+supertrendBear = dir == -1
+
+newSession = ta.change(time("D")) != 0
+tp = hlc3
+var float cumPV = na
+var float cumV = na
+var float cumP2V = na
+cumPV := newSession ? tp * volume : nz(cumPV) + tp * volume
+cumV := newSession ? volume : nz(cumV) + volume
+cumP2V := newSession ? volume * tp * tp : nz(cumP2V) + volume * tp * tp
+vwap = cumPV / cumV
+variance = math.max(cumP2V / cumV - vwap * vwap, 0.0)
+vwapStdev = math.sqrt(variance)
+vwapP1 = vwap + vwapStdev
+vwapM1 = vwap - vwapStdev
+
+exchangeHour = hour + timezoneOffset
+exchangeMinute = minute
+isWithinTradingHours = (exchangeHour > tradingHourStart or (exchangeHour == tradingHourStart and exchangeMinute >= tradingMinStart)) and exchangeHour < tradingHourEnd
+
+sessionName = isWithinTradingHours ? "🟢 ACTIVE" : "🔴 CLOSED"
+
+canTrade = strategy.position_size == 0
+
+bullIgnition = histBull and macdBull and dpoUp and ttmCurlUp and fastBullDmi and vfiFastBull
+bearIgnition = histBear and macdBear and dpoDown and ttmCurlDown and fastBearDmi and vfiFastBear
+
+topReversalZone = cloudPercent >= topReversalThresh
+bottomReversalZone = cloudPercent <= bottomReversalThresh
+
+callEntry = canTrade and isWithinTradingHours and priceAboveNama and bullTrendFlip and bullIgnition and rsiBull and psarBullAgree
+
+putEntry = canTrade and isWithinTradingHours and priceBelowNama and bearTrendFlip and bearIgnition and rsiBear and psarBearAgree
+
+hardStopCall = close < namaBot
+hardStopPut = close > namaTop
+
+if callEntry
+    strategy.entry("CALL", strategy.long, comment="Bullish Trend Flip")
+
+if putEntry
+    strategy.entry("PUT", strategy.short, comment="Bearish Trend Flip")
+
+barsInTrade = strategy.position_size != 0 ? bar_index - strategy.opentrades.entry_bar_index(0) : 0
+timeExit = barsInTrade >= maxHoldBars
+
+if strategy.position_size > 0 and (hardStopCall or timeExit)
+    strategy.close("CALL", comment="Exit")
+
+if strategy.position_size < 0 and (hardStopPut or timeExit)
+    strategy.close("PUT", comment="Exit")
+
+//=== VOLUME PROFILE CALCULATIONS ===
+nzV = nz(volume)
+vSMA = ta.sma(nzV, vmaL)
+
+rpS = f_gTS(rpLS)
+ppLS := f_gTS(ppLS)
+
+tPOS = lcDB == "Top Right" ? position.top_right : lcDB == "Middle Right" ? position.middle_right : position.bottom_left
+
+if time == chart.left_visible_bar_time
+    VP.sI := bar_index
+
+if vpRL
+    vpLN := last_bar_index - VP.sI
+
+if bar_index == last_bar_index - vpLN
+    VP.sI := bar_index
+    pLST := low
+    pHST := high
+else if bar_index > last_bar_index - vpLN
+    pLST := math.min(low, pLST)
+    pHST := math.max(high, pHST)
+
+if barstate.isfirst or vpRL
+    ltf := f_gTF(vpLN)
+
+ltfBD := getData(ltf)
+
+if barstate.ishistory and bar_index >= last_bar_index - vpLN and bar_index < last_bar_index and ltfBD.size() > 0
+    if ltfBD.size() > 0 and not na(nz(ltfBD.get(0).v))
+        for i = 0 to ltfBD.size() - 1 by 1
+            bD.bh.push(ltfBD.get(i).h)
+            bD.bl.push(ltfBD.get(i).l)
+            bD.bv.push(ltfBD.get(i).v)
+            if vsPT
+                bD.bp.push(ltfBD.get(i).c > ltfBD.get(i).o)
+            else
+                bD.bp.push(ltfBD.get(i).c - ltfBD.get(i).l > ltfBD.get(i).h - ltfBD.get(i).c)
+        bD.bn.push(ltfBD.size())
+
+pSTP = (pHST - pLST) / vpNR
+
+if barstate.islast and ltfBD.size() > 0
+    
+    // ONLY DELETE BOXES IF WE'RE RECALCULATING THE SAME BAR (not a new bar)
+    if VP.vp.size() > 0 and bar_index == lastProcessedBar
+        for i = VP.vp.size() - 1 to 0
+            box.delete(VP.vp.shift())
+    
+    // Mark that we're processing this bar
+    lastProcessedBar := bar_index
+
+    if bD.bn.size() > vpLN
+        qt = bD.bn.shift()
+        for i = 0 to qt - 1 by 1
+            bD.bh.shift()
+            bD.bl.shift()
+            bD.bv.shift()
+            bD.bp.shift()
+
+    if not na(VP.dPC)
+        VP.pPC.clear()
+        VP.dPC.delete()
+
+    if ltfBD.size() > 0 and not na(nz(ltfBD.get(0).v))
+        for i = 0 to ltfBD.size() - 1 by 1
+            bD.bh.push(ltfBD.get(i).h)
+            bD.bl.push(ltfBD.get(i).l)
+            bD.bv.push(ltfBD.get(i).v)
+            if vsPT
+                bD.bp.push(ltfBD.get(i).c > ltfBD.get(i).o)
+            else
+                bD.bp.push(ltfBD.get(i).c - ltfBD.get(i).l > ltfBD.get(i).h - ltfBD.get(i).c)
+        bD.bn.push(ltfBD.size())
+
+    bI = vpLN
+    bSZ = 0
+    aSZ = bD.bv.size()
+
+    for aI = 0 to aSZ - 1 by 1
+        lH = bD.bh.get(aI)
+        lL = bD.bl.get(aI)
+        lV = bD.bv.get(aI)
+        lR = math.max(lH - lL, syminfo.mintick)
+
+        int sSI = math.max(math.floor((lL - pLST) / pSTP), 0)
+        int eSI = math.min(math.floor((lH - pLST) / pSTP), vpNR - 1)
+
+        for pLI = sSI to eSI
+            float pL = pLST + pLI * pSTP
+            vPOR = switch
+                lL >= pL and lH > pL + pSTP => (pL + pSTP - lL) / lR
+                lH <= pL + pSTP and lL < pL => (lH - pL) / lR
+                lL >= pL and lH <= pL + pSTP => 1
+                => pSTP / lR
+
+            vD.vt.set(pLI, vD.vt.get(pLI) + lV * vPOR)
+
+            if bD.bp.get(aI)
+                vD.vb.set(pLI, vD.vb.get(pLI) + lV * vPOR)
+
+        if pcSH == "Developing POC"
+            if aI == bD.bn.get(vpLN - bI)
+                VP.pPC.push(chart.point.from_index(bar_index[bI], math.avg(high[bI], low[bI])))
+                VP.pPC.push(chart.point.from_index(bar_index[bI] + 1, pLST + (vD.vt.indexof(vD.vt.max()) + .5) * pSTP))
+                bSZ := bSZ + bD.bn.get(vpLN - bI)
+                bI := bI - 1
+            else if aI == bSZ + bD.bn.get(vpLN - bI) and bSZ != 0
+                VP.pPC.push(chart.point.from_index(bar_index[bI] + 1, pLST + (vD.vt.indexof(vD.vt.max()) + .5) * pSTP))
+                bSZ := bSZ + bD.bn.get(vpLN - bI)
+                bI := bI - 1
+            else if bI == 0
+                VP.pPC.push(chart.point.from_index(bar_index[bI] + 1, pLST + (vD.vt.indexof(vD.vt.max()) + .5) * pSTP))
+                bSZ := bSZ + bD.bn.get(vpLN - bI)
+
+    VP.dPC := polyline.new(VP.pPC, false, false, xloc.bar_index, pocC, color(na), line.style_solid, pocW)
+
+    for i = 0 to vpNR - 1 by 1
+        bbp = 2 * vD.vb.get(i) - vD.vt.get(i)
+        vD.vd.set(i, vD.vd.get(i) + bbp * (bbp > 0 ? 1 : -1))
+
+    VP.pcL := vD.vt.indexof(vD.vt.max())
+    ttV = vD.vt.sum() * vpVA
+    va = vD.vt.get(VP.pcL)
+    VP.laP := VP.pcL
+    VP.lbP := VP.pcL
+
+    while va < ttV
+        if VP.lbP == 0 and VP.laP == vpNR - 1
+            break
+
+        vaP = 0.
+        if VP.laP < vpNR - 1
+            vaP := vD.vt.get(VP.laP + 1)
+
+        vbP = 0.
+        if VP.lbP > 0
+            vbP := vD.vt.get(VP.lbP - 1)
+
+        if vaP >= vbP
+            va := va + vaP
+            VP.laP := VP.laP + 1
+        else
+            va := va + vbP
+            VP.lbP := VP.lbP - 1
+
+    vaH := pLST + (VP.laP + 1.) * pSTP
+    poc := pLST + (VP.pcL + .5) * pSTP
+    vaL := pLST + (VP.lbP + .0) * pSTP
+    pLN = vpLN > 360 ? 360 : vpLN
+
+    // ===== VP RENDERING (CONTROLLED BY showVolumeProfile TOGGLE) =====
+    if showVolumeProfile
+        if vahS
+            f_drawLineX(VP.sI, vaH, vpRT ? (vpSH ? int(pLN * vpWD + vpHO) : spSH ? vpHO : 0) + last_bar_index : last_bar_index, vaH, xloc.bar_index, extend.none, vahC, line.style_solid, vahW)
+
+        if pcSH == "Last Line"
+            f_drawLineX(VP.sI, poc, last_bar_index, poc, xloc.bar_index, extend.none, pocC, line.style_solid, pocW)
+
+        if vlSH
+            f_drawLineX(VP.sI, vaL, vpRT ? (vpSH ? int(pLN * vpWD + vpHO) : spSH ? vpHO : 0) + last_bar_index : last_bar_index, vaL, xloc.bar_index, extend.none, valC, line.style_solid, valW)
+
+        if vaBG
+            VP.vp.push(box.new(VP.sI, vaL, last_bar_index, vaH, vBGC, 1, line.style_dotted, bgcolor=vBGC))
+
+        if vpBG
+            VP.vp.push(box.new(VP.sI, pLST, last_bar_index, pHST, bgC, 1, line.style_dotted, bgcolor=bgC))
+
+        if vpLV
+            f_drawLabelX(vpRT ? (vpSH ? int(pLN * vpWD + vpHO) : spSH ? vpHO : 0) + last_bar_index : last_bar_index, pHST, str.tostring(pHST, format.mintick), color.new(chart.fg_color, 89), vpRT ? not vpSH and not spSH ? label.style_label_left : label.style_label_down : label.style_label_left, chart.fg_color, rpS, "Profile High")
+            f_drawLabelX(vpRT ? (vpSH ? int(pLN * vpWD + vpHO) : spSH ? vpHO : 0) + last_bar_index + (spSH ? int(vD.vd.max() / vD.vt.max() * pLN * vpWD) : 0) : last_bar_index, vaH, str.tostring(vaH, format.mintick), color.new(vahC, 89), label.style_label_left, vahC, rpS, "Value Area High")
+            f_drawLabelX(vpRT ? (vpSH ? int(pLN * vpWD + vpHO) : spSH ? vpHO : 0) + last_bar_index + (spSH ? int(vD.vd.max() / vD.vt.max() * pLN * vpWD) : 0) : last_bar_index, poc, str.tostring(poc, format.mintick), color.new(pocC, 89), label.style_label_left, pocC, rpS, "Point of Control")
+            f_drawLabelX(vpRT ? (vpSH ? int(pLN * vpWD + vpHO) : spSH ? vpHO : 0) + last_bar_index + (spSH ? int(vD.vd.max() / vD.vt.max() * pLN * vpWD) : 0) : last_bar_index, vaL, str.tostring(vaL, format.mintick), color.new(valC, 89), label.style_label_left, valC, rpS, "Value Area Low")
+            f_drawLabelX(vpRT ? (vpSH ? int(pLN * vpWD + vpHO) : spSH ? vpHO : 0) + last_bar_index : last_bar_index, pLST, str.tostring(pLST, format.mintick), color.new(chart.fg_color, 89), vpRT ? not vpSH and not spSH ? label.style_label_left : label.style_label_up : label.style_label_left, chart.fg_color, rpS, "Profile Low")
+
+        if vpST
+            var table vpStats = table.new(tPOS, 2, 10, border_width=3)
+            tC = chart.fg_color
+            table.cell(vpStats, 0, 0, "Profile High", text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_left, text_size=ppLS)
+            table.cell(vpStats, 1, 0, str.tostring(pHST, format.mintick), text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_right, text_size=ppLS)
+            table.cell(vpStats, 0, 1, "Value Area High", text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_left, text_size=ppLS)
+            table.cell(vpStats, 1, 1, str.tostring(vaH, format.mintick), text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_right, text_size=ppLS)
+            table.cell(vpStats, 0, 2, "Point of Control", text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_left, text_size=ppLS)
+            table.cell(vpStats, 1, 2, str.tostring(poc, format.mintick), text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_right, text_size=ppLS)
+            table.cell(vpStats, 0, 3, "Value Area Low", text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_left, text_size=ppLS)
+            table.cell(vpStats, 1, 3, str.tostring(vaL, format.mintick), text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_right, text_size=ppLS)
+            table.cell(vpStats, 0, 4, "Profile Low", text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_left, text_size=ppLS)
+            table.cell(vpStats, 1, 4, str.tostring(pLST, format.mintick), text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_right, text_size=ppLS)
+            table.cell(vpStats, 0, 5, "Total Volume\nin VP Range", text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_left, text_size=ppLS)
+            table.cell(vpStats, 1, 5, str.tostring(vD.vt.sum(), format.volume), text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_right, text_size=ppLS)
+            table.cell(vpStats, 0, 6, "Avg Volume/Bar", text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_left, text_size=ppLS)
+            table.cell(vpStats, 1, 6, str.tostring(vD.vt.sum() / (vpLN + 1), format.volume), text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_right, text_size=ppLS)
+            table.cell(vpStats, 0, 7, "Volume MA (" + str.tostring(vmaL) + ")", text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_left, text_size=ppLS)
+            table.cell(vpStats, 1, 7, str.tostring(vSMA, format.volume), text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_right, text_size=ppLS)
+            table.cell(vpStats, 0, 8, "Number of Bars", text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_left, text_size=ppLS)
+            table.cell(vpStats, 1, 8, str.tostring(vpLN + 1), text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_right, text_size=ppLS)
+            table.cell(vpStats, 0, 9, "Data From", text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_left, text_size=ppLS)
+            table.cell(vpStats, 1, 9, ltf + " TF", text_color=tC, bgcolor=color.new(tC, 80), text_halign=text.align_right, text_size=ppLS)
+
+        if vgSH
+            var bool uNth = false
+            var bool lNth = false
+            noN = int(vpNR * vgNoN)
+
+            tVT = vD.vt.copy()
+
+            for index = 1 to noN
+                tVT.unshift(vD.vt.max())
+                tVT.push(vD.vt.max())
+
+            for vn = 0 to vpNR - 1 + 2 * noN
+                if vgSH and vn >= 2 * noN
+                    for cVN = vn - 2 * noN to vn - noN - 1
+                        if tVT.get(vn - noN) >= tVT.get(cVN)
+                            uNth := false
+                            break
+                        else
+                            uNth := true
+
+                    for cVN = vn - noN + 1 to vn
+                        if tVT.get(vn - noN) >= tVT.get(cVN)
+                            lNth := false
+                            break
+                        else
+                            lNth := true
+
+                    if uNth and lNth
+                        VP.vp.push(box.new(bar_index[vpLN], pLST + (vn - 2 * noN + .1) * pSTP, vpRT ? int(pLN * vpWD + vpHO) + last_bar_index : bar_index, pLST + (vn - 2 * noN + .9) * pSTP, 
+                                          color(na), bgcolor=vgC, xloc=xloc.bar_index))
+
+        for i = 0 to vpNR - 1 by 1
+            maxVol = math.max(vD.vt.max(), 1e-10)
+
+            if vpSH
+                sBI = vpRT ? int(pLN * vpWD + vpHO) + int(last_bar_index - vD.vb.get(i) / maxVol * pLN * vpWD) : VP.sI
+                eBI = vpRT ? int(pLN * vpWD + vpHO) + last_bar_index : int(sBI + vD.vb.get(i) / maxVol * pLN * vpWD)
+                VP.vp.push(box.new(sBI, pLST + (i + .1) * pSTP, eBI, pLST + (i + .9) * pSTP, color(na), bgcolor=i >= VP.lbP and i <= VP.laP ? vaUC : vpUC))
+
+                sBI := vpRT ? sBI : eBI
+                eBI := vpRT ? sBI - int((vD.vt.get(i) - vD.vb.get(i)) / maxVol * pLN * vpWD) : sBI + int((vD.vt.get(i) - vD.vb.get(i)) / maxVol * pLN * vpWD)
+                VP.vp.push(box.new(sBI, pLST + (i + .1) * pSTP, eBI, pLST + (i + .9) * pSTP, color(na), bgcolor=i >= VP.lbP and i <= VP.laP ? vaDC : vpDC))
+
+            if spSH
+                sBI = vpRT ? (vpSH ? int(pLN * vpWD + vpHO) : vpHO) + int(last_bar_index + vD.vd.get(i) / maxVol * pLN * vpWD) : VP.sI
+                eBI = vpRT ? (vpSH ? int(pLN * vpWD + vpHO) : vpHO) + last_bar_index : vpRL ? int(sBI + vD.vd.get(i) / maxVol * pLN * vpWD) : int(sBI - vD.vd.get(i) / maxVol * pLN * vpWD)
+
+                bbp = 2 * vD.vb.get(i) - vD.vt.get(i)
+                VP.vp.push(box.new(sBI + 1, pLST + (i + .1) * pSTP, eBI + 1, pLST + (i + .9) * pSTP, color(na), bgcolor=bbp > 0 ? spUC : spDC))
+
+            if sdSH and vD.vt.get(i) / maxVol < sdTH
+                sdC = pLST + (i + 0.50) * pSTP > pLST + (VP.pcL + .5) * pSTP ? sdSC : sdDC
+                VP.vp.push(box.new(bar_index[vpLN], pLST + (i + 1.) * pSTP, bar_index, pLST + (i + .0) * pSTP, color(na), bgcolor=sdC))
+
+//=== VOLUME HISTOGRAM ===
+pHSTv = ta.highest(high, vpLN < 497 ? vpLN : 496)
+pLSTv = ta.lowest(low, vpLN < 497 ? vpLN : 496)
+vHST = ta.highest(nzV, vpLN < 497 ? vpLN : 496)
+vMAR = nzV / vSMA
+
+if barstate.islast and not na(nzV) and vhSH and vSMA > 0 and showVolumeProfile
+    pCHR = (pHSTv - pLSTv) / pHSTv
+
+    if VH.vh.size() > 0
+        for i = 0 to VH.vh.size() - 1 by 1
+            line.delete(VH.vh.shift())
+
+    VH.pMA.clear()
+    VH.vMA.delete()
+
+    for bI = 0 to vpLN by 1
+        if VH.vh.size() < 500
+            VH.vh.push(line.new(bar_index[bI], vhLP ? pHST + pHSTv * pCHR * vhVO : pLST - pLSTv * pCHR * vhVO, bar_index[bI], (vhLP ? pHST + pHSTv * pCHR * vhVO : pLST - pLSTv * pCHR * vhVO) * (1 + (vhLP ? 1 : -1) * nzV[bI] / vHST * pCHR / vhHT), xloc.bar_index, extend.none, close[bI] > open[bI] ? vhUC : vhDC, line.style_solid, 2))
+
+            if vmaS and not na(vSMA[bI])
+                VH.pMA.push(chart.point.from_index(bar_index[bI], (vhLP ? pHST + pHSTv * pCHR * vhVO : pLST - pLSTv * pCHR * vhVO) * (1 + (vhLP ? 1 : -1) * nzV[bI] / vHST * pCHR / vhHT / vMAR[bI])))
+
+    VH.vMA := polyline.new(VH.pMA, false, false, xloc.bar_index, vmaC, color(na), line.style_solid, 1)
+
+//=== PLOTTING ===
+regimeColor = bullTrend ? color.green : bearTrend ? color.red : bullChopAbove or bullChopBetween ? color.lime : bearChopBelow or bearChopBetween ? #ff6b6b : color.gray
+plot(nama_val, "NAMA", color=regimeColor, linewidth=3)
+
+plot(ema24, "EMA 24", color=color.new(color.orange, 0), linewidth=2)
+
+cTop = plot(namaTop, display=display.none)
+cBot = plot(namaBot, display=display.none)
+cloudColor = bullTrend ? color.new(#26a69a, 70) : bearTrend ? color.new(#ef5350, 70) : bullChopAbove or bullChopBetween ? color.new(#00ff00, 85) : bearChopBelow or bearChopBetween ? color.new(#ff6b6b, 85) : color.new(#ffd700, 92)
+fill(cTop, cBot, color=cloudColor)
+
+plot(sma50, "SMA 50", color=color.new(color.blue, 50), linewidth=1)
+
+//=== FIBONACCI LINES PLOTTING ===
+plot(showFibonacci ? fib_0 : na, "Fib 0.0%", color=color.new(color.green, 70), linewidth=1)
+plot(showFibonacci ? fib_236 : na, "Fib 23.6%", color=color.new(color.lime, 60), linewidth=1)
+plot(showFibonacci ? fib_382 : na, "Fib 38.2%", color=color.new(color.lime, 50), linewidth=2)
+plot(showFibonacci ? fib_500 : na, "Fib 50.0%", color=color.new(color.yellow, 50), linewidth=2)
+plot(showFibonacci ? fib_618 : na, "Fib 61.8%", color=color.new(color.orange, 50), linewidth=2)
+plot(showFibonacci ? fib_786 : na, "Fib 78.6%", color=color.new(color.orange, 60), linewidth=1)
+plot(showFibonacci ? fib_1000 : na, "Fib 100%", color=color.new(color.red, 70), linewidth=1)
+
+plot(showFibonacci ? fib_1272 : na, "Fib 127.2%", color=color.new(color.red, 40), linewidth=1)
+plot(showFibonacci ? fib_1618 : na, "Fib 161.8%", color=color.new(color.red, 40), linewidth=1)
+
+//=== CLOUD PERCENTAGE LABEL ===
+var label cloudPercentLabel = na
+
+if showCloudPercent and barstate.islast
+    if not na(cloudPercentLabel)
+        label.delete(cloudPercentLabel)
+    
+    cloudPercentLabel := label.new(
+        bar_index, 
+        namaTop + (namaTop - namaBot) * 0.05, 
+        str.tostring(math.round(cloudPercent, 1)) + "%",
+        xloc=xloc.bar_index, 
+        yloc=yloc.price,
+        color=topReversalZone ? color.new(color.red, 80) : bottomReversalZone ? color.new(color.green, 80) : color.new(color.gray, 80),
+        textcolor=topReversalZone ? color.red : bottomReversalZone ? color.green : color.gray,
+        style=label.style_label_center,
+        size=size.large)
+
+
+
+//=== DASHBOARD (NOW INDEPENDENT WITH TOGGLE) ===
+var table dash = na
+tC = chart.fg_color
+
+if showDashboard
+    if barstate.islast
+        if na(dash)
+            dash := table.new(position.top_right, 2, 25, border_width=1)
+        
+        // Row 0: Trading Hours
+        table.cell(dash, 0, 0, "HOURS", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 0, sessionName, bgcolor=isWithinTradingHours ? color.green : color.red, text_color=color.white)
+        
+        // Row 1: Regime
+        regimeText = bullTrend ? "🟢 BULL TREND" : bearTrend ? "🔴 BEAR TREND" : bullChopAbove ? "🟡 BULL CHOP+" : bearChopBelow ? "🟣 BEAR CHOP-" : bullChopBetween ? "🟢 BULL CHOP~" : bearChopBetween ? "🔴 BEAR CHOP~" : "⭕ NEUTRAL"
+        regimeColor = bullTrend or bullChopAbove or bullChopBetween ? color.green : bearTrend or bearChopBelow or bearChopBetween ? color.red : color.gray
+        table.cell(dash, 0, 1, "NAMA REGIME", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 1, regimeText, bgcolor=regimeColor, text_color=color.black)
+        
+        // Row 2: Cloud %
+        cloudText = str.tostring(math.round(cloudPercent, 1)) + "%"
+        cloudBgColor = topReversalZone ? color.new(color.red, 80) : bottomReversalZone ? color.new(color.green, 80) : color.new(color.gray, 80)
+        table.cell(dash, 0, 2, "CLOUD %", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 2, cloudText, bgcolor=cloudBgColor, text_color=color.white)
+        
+        // Row 3: Cloud Zone
+        zoneText = topReversalZone ? "🔴 TOP-REV" : bottomReversalZone ? "🟢 BOT-REV" : "🟡 CENTER"
+        zoneColor = topReversalZone ? color.red : bottomReversalZone ? color.green : color.gray
+        table.cell(dash, 0, 3, "ZONE", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 3, zoneText, bgcolor=zoneColor, text_color=color.white)
+        
+        // Row 4: POC
+        table.cell(dash, 0, 4, "POC", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 4, not na(poc) ? str.tostring(math.round(poc, 2)) : "—", bgcolor=color.new(color.orange, 80), text_color=color.white)
+        
+        // Row 5: VAH
+        table.cell(dash, 0, 5, "VAH", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 5, not na(vaH) ? str.tostring(math.round(vaH, 2)) : "—", bgcolor=color.new(color.blue, 80), text_color=color.white)
+        
+        // Row 6: VAL
+        table.cell(dash, 0, 6, "VAL", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 6, not na(vaL) ? str.tostring(math.round(vaL, 2)) : "—", bgcolor=color.new(color.blue, 80), text_color=color.white)
+        
+        // Row 7: Profile High
+        table.cell(dash, 0, 7, "PROF HIGH", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 7, not na(pHST) ? str.tostring(math.round(pHST, 2)) : "—", bgcolor=color.new(color.red, 80), text_color=color.white)
+        
+        // Row 8: Profile Low
+        table.cell(dash, 0, 8, "PROF LOW", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 8, not na(pLST) ? str.tostring(math.round(pLST, 2)) : "—", bgcolor=color.new(color.green, 80), text_color=color.white)
+        
+        // Row 9: Regime Flip Bull
+        flipBullText = bullTrendFlip ? "🟢 FLIPPING" : "—"
+        flipBullColor = bullTrendFlip ? color.new(color.green, 30) : color.gray
+        table.cell(dash, 0, 9, "BULL FLIP", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 9, flipBullText, bgcolor=flipBullColor, text_color=color.white)
+        
+        // Row 10: Regime Flip Bear
+        flipBearText = bearTrendFlip ? "🔴 FLIPPING" : "—"
+        flipBearColor = bearTrendFlip ? color.new(color.red, 30) : color.gray
+        table.cell(dash, 0, 10, "BEAR FLIP", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 10, flipBearText, bgcolor=flipBearColor, text_color=color.white)
+        
+        // Row 11: Price vs NAMA
+        priceVsNama = priceAboveNama ? "🟢 ABOVE" : "🔴 BELOW"
+        priceVsNamaColor = priceAboveNama ? color.green : color.red
+        table.cell(dash, 0, 11, "PRICE vs NAMA", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 11, priceVsNama, bgcolor=priceVsNamaColor, text_color=color.white)
+        
+        // Row 12: EMA Direction
+        emaDir = emaRising ? "📈 RISING" : emaFalling ? "📉 FALLING" : "—"
+        emaDirColor = emaRising ? color.green : emaFalling ? color.red : color.gray
+        table.cell(dash, 0, 12, "EMA DIR", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 12, emaDir, bgcolor=emaDirColor, text_color=color.white)
+        
+        // Row 13: MACD
+        macdText = macdBull ? "🟢 BULL" : macdBear ? "🔴 BEAR" : "—"
+        macdColor = macdBull ? color.green : macdBear ? color.red : color.gray
+        table.cell(dash, 0, 13, "MACD", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 13, macdText, bgcolor=macdColor, text_color=color.white)
+        
+        // Row 14: RSI
+        rsiText = rsiBull ? "🟢 BULL" : rsiBear ? "🔴 BEAR" : "—"
+        rsiColor = rsiBull ? color.green : rsiBear ? color.red : color.gray
+        table.cell(dash, 0, 14, "RSI", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 14, rsiText, bgcolor=rsiColor, text_color=color.white)
+        
+        // Row 15: DMI
+        dmiText = dmiBullAgree ? "🟢 BULL" : dmiBearAgree ? "🔴 BEAR" : "—"
+        dmiColor = dmiBullAgree ? color.green : dmiBearAgree ? color.red : color.gray
+        table.cell(dash, 0, 15, "DMI", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 15, dmiText, bgcolor=dmiColor, text_color=color.white)
+        
+        // Row 16: VFI
+        vfiText = vfiBullAgree ? "🟢 BULL" : vfiBearAgree ? "🔴 BEAR" : "—"
+        vfiColor = vfiBullAgree ? color.green : vfiBearAgree ? color.red : color.gray
+        table.cell(dash, 0, 16, "VFI", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 16, vfiText, bgcolor=vfiColor, text_color=color.white)
+        
+        // Row 17: PSAR
+        psarText = psarBullAgree ? "🟢 BULL" : psarBearAgree ? "🔴 BEAR" : "—"
+        psarColor = psarBullAgree ? color.green : psarBearAgree ? color.red : color.gray
+        table.cell(dash, 0, 17, "PSAR", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 17, psarText, bgcolor=psarColor, text_color=color.white)
+        
+        // Row 18: SuperTrend
+        stText = supertrendBull ? "🟢 BULL" : supertrendBear ? "🔴 BEAR" : "—"
+        stColor = supertrendBull ? color.green : supertrendBear ? color.red : color.gray
+        table.cell(dash, 0, 18, "SUPERTREND", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 18, stText, bgcolor=stColor, text_color=color.white)
+        
+        // Row 19: Ignition
+        ignText = bullIgnition ? "🟢 IGNITE" : bearIgnition ? "🔴 IGNITE" : "—"
+        ignColor = bullIgnition ? color.green : bearIgnition ? color.red : color.gray
+        table.cell(dash, 0, 19, "IGNITION", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 19, ignText, bgcolor=ignColor, text_color=color.white)
+        
+        // Row 20: Status
+        canTradeText = canTrade ? "✅ READY" : "🚫 IN TRADE"
+        canTradeColor = canTrade ? color.green : color.red
+        table.cell(dash, 0, 20, "STATUS", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 20, canTradeText, bgcolor=canTradeColor, text_color=color.white)
+        
+        // Row 21: Signal
+        signalText = callEntry ? "✅ CALL" : putEntry ? "✅ PUT" : "⏸️ WAIT"
+        signalColor = callEntry ? color.green : putEntry ? color.red : color.gray
+        table.cell(dash, 0, 21, "SIGNAL", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 21, signalText, bgcolor=signalColor, text_color=color.black)
+        
+        // Row 22: Position
+        posText = strategy.position_size > 0 ? "📈 LONG" : strategy.position_size < 0 ? "📉 SHORT" : "⭕ FLAT"
+        posColor = strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray
+        table.cell(dash, 0, 22, "POSITION", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 22, posText, bgcolor=posColor, text_color=color.white)
+        
+        // Row 23: P&L
+        pnlText = strategy.position_size > 0 or strategy.position_size < 0 ? str.tostring(strategy.openprofit, "+0.00") : "—"
+        pnlColor = strategy.openprofit > 0 ? color.green : strategy.openprofit < 0 ? color.red : color.gray
+        table.cell(dash, 0, 23, "P&L", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 23, pnlText, bgcolor=pnlColor, text_color=color.white)
+        
+        // Row 24: VP Timeframe
+        table.cell(dash, 0, 24, "VP TF", bgcolor=color.black, text_color=tC)
+        table.cell(dash, 1, 24, ltf, bgcolor=color.new(color.purple, 80), text_color=color.white)
+else
+    if not na(dash)
+        table.delete(dash)
+        dash := na
+
+//=== ALERTS ===
+alertcondition(callEntry, "CALL Entry", "Bullish Trend Flip Confirmed")
+alertcondition(putEntry, "PUT Entry", "Bearish Trend Flip Confirmed")
+alertcondition(hardStopCall or timeExit, "Exit", "Position Exit")
