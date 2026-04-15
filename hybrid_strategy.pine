@@ -1,0 +1,1248 @@
+// =============================================================================
+// HYBRID STRATEGY: Smart NAMA + Advanced Indicator Suite
+// Merges NAMA-based regime detection (primary driver) with the full
+// MACD+VWMACD+DPO+TTM+DMIx3+VFIx3+ATRx3+PSARx3+ML-SuperTrend+$ADD+$TRIN+$VOLD
+// indicator suite for maximum confluence-gated entries.
+//
+// ENTRY PHILOSOPHY:
+//   • NAMA regime flip is the PRIMARY and MANDATORY trigger
+//   • Advanced scoring (bullScore/bearScore) must reach ≥ 60% confidence
+//   • Script-2 regime state must align (BULL/BEAR TREND or directional CHOP)
+//   • Result: far fewer signals but each with ~3× the conviction
+// =============================================================================
+//@version=6
+strategy("Hybrid NAMA + Advanced Suite (BACKTEST)",
+         overlay=true,
+         pyramiding=0,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=100,
+         initial_capital=10000,
+         commission_type=strategy.commission.percent,
+         commission_value=0.05,
+         slippage=3,
+         max_labels_count=500,
+         max_boxes_count=500,
+         max_lines_count=500,
+         max_bars_back=5000)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 1 – INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// --- UI Toggles ---
+showDashboard      = input.bool(true,  "📊 Show Dashboard",        group="UI")
+showLabels         = input.bool(true,  "🏷  Show Entry/Exit Labels", group="UI")
+showCloudPercent   = input.bool(true,  "☁  Show Cloud %",           group="UI")
+showFibonacci      = input.bool(true,  "📐 Show Fibonacci Levels",  group="UI")
+showRegimeBg       = input.bool(true,  "🎨 Show Regime Background", group="UI")
+showRegimeBars     = input.bool(false, "🎨 Color Bars by Regime",   group="UI")
+showVwapBands      = input.bool(true,  "〰  Show VWAP Bands",        group="UI")
+showPriceCloud     = input.bool(true,  "Show Price Regime Cloud",   group="UI")
+showPremarket      = input.bool(true,  "Show Premarket H/L",        group="UI")
+showRegimeLabel    = input.bool(true,  "Show Live Regime Label",    group="UI")
+showModeLabels     = input.bool(true,  "Show CONT/REV Mode Labels", group="UI")
+showSignals        = input.bool(false, "Show Raw CALL/PUT Shapes",  group="UI")
+
+// --- Filters ---
+useInternalsFilter = input.bool(false, "🟢 Use Internals as Hard Filter", group="FILTERS")
+useMfFilter        = input.bool(true,  "Use Market Forecast Filter",      group="FILTERS")
+mfBullThresh       = input.float(55.0, "MF Bull Threshold", group="FILTERS")
+mfBearThresh       = input.float(45.0, "MF Bear Threshold", group="FILTERS")
+
+// --- Risk ---
+maxHoldBars  = input.int(50,   "Max Hold Bars",       minval=5, maxval=200, group="RISK")
+confThresh   = input.int(60,   "Min Confidence % to Enter", minval=30, maxval=100, group="RISK")
+
+// --- NAMA ---
+namaLen  = input.int(20,  "NAMA Length",        minval=10, maxval=50, group="NAMA")
+atrMul   = input.float(5.0,"NAMA ATR Multiplier",step=0.1, minval=0,  group="NAMA")
+emaLen   = input.int(24,  "EMA Length",         minval=10, maxval=50, group="NAMA")
+
+// --- Cloud % thresholds ---
+topReversalThresh    = input.float(80.0, "Top Reversal % (Puts)",  minval=50, maxval=100, group="CLOUD%")
+bottomReversalThresh = input.float(20.0, "Bot Reversal % (Calls)", minval=0,  maxval=50,  group="CLOUD%")
+
+// --- HTF ---
+htfTimeframe = input.string("60","HTF Timeframe",options=["30","60","120","240","D"], group="HTF")
+
+// --- Session ---
+premarketSession   = input.session("0400-0930","Premarket Session",  group="SESSION")
+regularSessionStr  = input.session("0930-1600","Regular Session",    group="SESSION")
+tradingHourStart   = input.int(8,  "Trading Hour Start (Central)", minval=0, maxval=23, group="SESSION")
+tradingHourEnd     = input.int(15, "Trading Hour End (Central)",   minval=0, maxval=23, group="SESSION")
+tradingMinStart    = input.int(30, "Trading Minute Start",         minval=0, maxval=59, group="SESSION")
+timezoneOffset     = input.int(-1, "Timezone Offset from Central", minval=-12, maxval=12, group="SESSION")
+
+// --- Fibonacci ---
+swingLookback = input.int(50,"Swing High/Low Lookback", minval=20, maxval=100, group="FIBONACCI")
+
+// --- Indicators ---
+fastLen       = input.int(7,    "MACD Fast",              group="INDICATORS")
+slowLen       = input.int(20,   "MACD Slow",              group="INDICATORS")
+sigLen        = input.int(9,    "MACD Signal",            group="INDICATORS")
+dpoLen        = input.int(20,   "DPO Length",             group="INDICATORS")
+smaLen        = input.int(50,   "SMA Length",             group="INDICATORS")
+ttmBbLen      = input.int(20,   "TTM BB Length",          group="INDICATORS")
+ttmBbMult     = input.float(2.0,"TTM BB Mult",            group="INDICATORS")
+ttmKcLen      = input.int(20,   "TTM KC Length",          group="INDICATORS")
+ttmKcMult     = input.float(1.5,"TTM KC Mult",            group="INDICATORS")
+ttmMomLen     = input.int(11,   "TTM Momentum Length",    group="INDICATORS")
+rsiLen        = input.int(12,   "RSI Length",             group="INDICATORS")
+rsiBullLevel  = input.float(55.0,"RSI Bull Level",        group="INDICATORS")
+rsiBearLevel  = input.float(34.0,"RSI Bear Level",        group="INDICATORS")
+reactionLookback = input.int(6, "Reaction Lookback",      group="INDICATORS")
+useDpoZeroBias   = input.bool(true,"Use DPO Zero Bias",   group="INDICATORS")
+requireTtmAgreement = input.bool(true,"Require TTM Agreement", group="INDICATORS")
+
+// --- Triple DMI ---
+dmiFastLen = input.int(8,  "DMI Fast Length", group="INDICATORS")
+dmiAvgLen  = input.int(14, "DMI Avg Length",  group="INDICATORS")
+dmiSlowLen = input.int(21, "DMI Slow Length", group="INDICATORS")
+adxThresh  = input.float(20.0,"ADX Trend Threshold", group="INDICATORS")
+
+// --- Triple VFI ---
+vfiFastLen = input.int(16, "VFI Fast Length", group="INDICATORS")
+vfiAvgLen  = input.int(18, "VFI Avg Length",  group="INDICATORS")
+vfiSlowLen = input.int(30, "VFI Slow Length", group="INDICATORS")
+vfiCoef    = input.float(0.2, "VFI Coef",     group="INDICATORS")
+vfiVolCap  = input.float(2.5, "VFI Vol Cap",  group="INDICATORS")
+
+// --- Triple ATR ---
+atrFastLen    = input.int(7,   "ATR Fast Length", group="INDICATORS")
+atrAvgLen2    = input.int(14,  "ATR Avg Length",  group="INDICATORS")
+atrSlowLen    = input.int(21,  "ATR Slow Length", group="INDICATORS")
+atrMaLen      = input.int(30,  "ATR MA Length",   group="INDICATORS")
+atrTrendMult2 = input.float(1.03,"ATR Trend Mult",group="INDICATORS")
+
+// --- Triple PSAR ---
+psarFastStep = input.float(0.01,"PSAR Fast Step", group="INDICATORS")
+psarFastMax  = input.float(0.10,"PSAR Fast Max",  group="INDICATORS")
+psarAvgStep  = input.float(0.02,"PSAR Avg Step",  group="INDICATORS")
+psarAvgMax   = input.float(0.20,"PSAR Avg Max",   group="INDICATORS")
+psarSlowStep = input.float(0.03,"PSAR Slow Step", group="INDICATORS")
+psarSlowMax  = input.float(0.30,"PSAR Slow Max",  group="INDICATORS")
+
+// --- SuperTrend ---
+supertrendAtrLen  = input.int(14,    "SuperTrend ATR Period",  group="INDICATORS")
+supertrendMult    = input.float(2.5, "SuperTrend Multiplier",  group="INDICATORS")
+supertrendUseBoost = input.bool(true,"SuperTrend as Trend Boost", group="INDICATORS")
+
+// --- ML SuperTrend ---
+stGR = "ML SuperTrend Visual"
+training_data_period = input.int(100, "Training Data Length",             group=stGR)
+highvol = input.float(0.75,"Initial High Volatility Pct", maxval=1,       group=stGR)
+midvol  = input.float(0.5, "Initial Medium Volatility Pct", maxval=1,     group=stGR)
+lowvol  = input.float(0.25,"Initial Low Volatility Pct",  maxval=1,       group=stGR)
+t1      = input.int(70,"Transparency 1", maxval=100, minval=0,            group=stGR)
+t2      = input.int(95,"Transparency 2", maxval=100, minval=0,            group=stGR)
+stGreen = input.color(#00ffbb,"ST Bullish Color",                         group=stGR)
+stRed   = input.color(#ff1100,"ST Bearish Color",                         group=stGR)
+
+// --- Internals ---
+addSymbol      = input.string("USI:ADD",      "$ADD Symbol",          group="INTERNALS")
+trinSymbol     = input.string("USI:TRIN.US",  "$TRIN Symbol",         group="INTERNALS")
+voldSymbol     = input.string("USI:VOLD",     "$VOLD Symbol",         group="INTERNALS")
+internalsEmaLen   = input.int(8,    "Internals EMA Length", group="INTERNALS")
+addNeutralBand    = input.float(50.0,"$ADD/$VOLD Neutral Band", group="INTERNALS")
+trinNeutralBand   = input.float(0.05,"$TRIN Neutral Band",      group="INTERNALS")
+internalsLookback = input.int(20,   "Internals Lookback",    group="INTERNALS")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 2 – HELPER FUNCTIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// NAMA – Golden Ratio weighted moving average
+nama(src, len) =>
+    goldenRatio = 1.618
+    alpha = goldenRatio / 100
+    ma = ta.sma(src, len)
+    ma := na(ma[1]) ? ma : alpha * src + (1 - alpha) * ma[1]
+    ma
+
+// Triple DMI
+dmiCalc(len) =>
+    upMove   = high - high[1]
+    downMove = low[1] - low
+    plusDM   = (upMove > downMove and upMove > 0) ? upMove : 0.0
+    minusDM  = (downMove > upMove and downMove > 0) ? downMove : 0.0
+    trRma    = ta.rma(ta.tr(true), len)
+    plus     = 100 * ta.rma(plusDM, len) / math.max(trRma, 1e-10)
+    minus    = 100 * ta.rma(minusDM, len) / math.max(trRma, 1e-10)
+    dx       = 100 * math.abs(plus - minus) / math.max(plus + minus, 1e-10)
+    adx      = ta.rma(dx, len)
+    [plus, minus, adx]
+
+// Triple VFI
+vfiCalc(len, coef, volCap) =>
+    typical  = hlc3
+    inter    = math.log(typical) - math.log(typical[1])
+    cutoff   = coef * ta.stdev(inter, len) * close
+    volAvg   = ta.sma(volume, len)
+    maxVol   = volAvg * volCap
+    cappedVol = math.min(volume, maxVol)
+    mf       = typical - typical[1]
+    dir      = mf > cutoff ? 1.0 : mf < -cutoff ? -1.0 : 0.0
+    raw      = dir * cappedVol
+    ta.sma((ta.sma(raw, len) * len) / math.max(volAvg, 1e-10), 3)
+
+// SuperTrend core
+pine_supertrend(factor, atr) =>
+    src           = hl2
+    upperBand     = src + factor * atr
+    lowerBand     = src - factor * atr
+    prevLowerBand = nz(lowerBand[1])
+    prevUpperBand = nz(upperBand[1])
+    lowerBand    := lowerBand > prevLowerBand or close[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand    := upperBand < prevUpperBand or close[1] > prevUpperBand ? upperBand : prevUpperBand
+    int   _direction  = na
+    float superTrend  = na
+    prevSuperTrend    = superTrend[1]
+    if na(atr[1])
+        _direction := 1
+    else if prevSuperTrend == prevUpperBand
+        _direction := close > upperBand ? -1 : 1
+    else
+        _direction := close < lowerBand ? 1 : -1
+    superTrend := _direction == -1 ? lowerBand : upperBand
+    [superTrend, _direction]
+
+// Cloud % position
+cloudPercentage(price, top, bot) =>
+    cloudHeight  = top - bot
+    priceInCloud = price - bot
+    (priceInCloud / cloudHeight) * 100
+
+// Score text
+scoreText(val) =>
+    val >= 13 ? "ELITE" : val >= 10 ? "STRONG" : val >= 7 ? "GOOD" : val >= 4 ? "WEAK" : "POOR"
+
+// Triple alignment text helper
+tripleAlignText(fBull, aBull, sBull, fBear, aBear, sBear) =>
+    string result = "MIXED"
+    if fBull and aBull and sBull
+        result := "BULL F+A+S"
+    else if fBear and aBear and sBear
+        result := "BEAR F+A+S"
+    else if fBull and aBull
+        result := "BULL F+A"
+    else if aBull and sBull
+        result := "BULL A+S"
+    else if fBull and sBull
+        result := "BULL F+S"
+    else if fBear and aBear
+        result := "BEAR F+A"
+    else if aBear and sBear
+        result := "BEAR A+S"
+    else if fBear and sBear
+        result := "BEAR F+S"
+    else if fBull
+        result := "BULL FAST"
+    else if aBull
+        result := "BULL AVG"
+    else if sBull
+        result := "BULL SLOW"
+    else if fBear
+        result := "BEAR FAST"
+    else if aBear
+        result := "BEAR AVG"
+    else if sBear
+        result := "BEAR SLOW"
+    result
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 3 – NAMA CALCULATIONS (Primary Driver)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Core NAMA line and envelope
+nama_val     = nama(hlcc4, namaLen)
+namaAtrRange = nama(ta.tr, namaLen) * atrMul
+namaTop      = nama_val + namaAtrRange
+namaBot      = nama_val - namaAtrRange
+cloudPercent = cloudPercentage(close, namaTop, namaBot)
+
+// 24 EMA trend direction
+ema24      = ta.ema(close, emaLen)
+emaDir     = ema24 > ema24[1] ? 1 : ema24 < ema24[1] ? -1 : 0
+emaRising  = emaDir == 1
+emaFalling = emaDir == -1
+
+// SMA 50
+sma50 = ta.sma(close, smaLen)
+
+// Price position vs NAMA / EMA
+priceAboveNama = close > nama_val
+priceBelowNama = close < nama_val
+priceAboveEma  = close > ema24
+priceBelowEma  = close < ema24
+
+// ── NAMA Regime Definitions ──────────────────────────────────────────────────
+bullishTrendCondition    = priceAboveNama and nama_val > ema24 and emaRising
+bullishChopAboveCond     = priceAboveNama and emaRising and not bullishTrendCondition
+bullishChopBetweenCond   = priceBelowNama and priceAboveEma and emaRising
+bearishTrendCondition    = priceBelowNama and nama_val < ema24 and emaFalling
+bearishChopBelowCond     = priceBelowNama and emaFalling and not bearishTrendCondition
+bearishChopBetweenCond   = priceAboveNama and priceBelowEma and emaFalling
+
+// Persistent NAMA regime
+var int persistentRegime = 0
+if bullishTrendCondition
+    persistentRegime := 1
+else if bullishChopAboveCond
+    persistentRegime := 2
+else if bullishChopBetweenCond
+    persistentRegime := 3
+else if bearishTrendCondition
+    persistentRegime := -1
+else if bearishChopBelowCond
+    persistentRegime := -2
+else if bearishChopBetweenCond
+    persistentRegime := -3
+
+namaBullTrend      = persistentRegime == 1
+namaBullChopAbove  = persistentRegime == 2
+namaBullChopBetween = persistentRegime == 3
+namaBearTrend      = persistentRegime == -1
+namaBearChopBelow  = persistentRegime == -2
+namaBearChopBetween = persistentRegime == -3
+
+// ── NAMA Regime Flips (Primary Entry Triggers) ───────────────────────────────
+namaBullFlip = namaBullTrend and not namaBullTrend[1] and persistentRegime[1] != 1
+namaBearFlip = namaBearTrend and not namaBearTrend[1] and persistentRegime[1] != -1
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 4 – INDICATOR SUITE (Script 2 Layer)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── MACD & VWMACD ────────────────────────────────────────────────────────────
+macdLine    = ta.ema(close, fastLen) - ta.ema(close, slowLen)
+signalLine  = ta.ema(macdLine, sigLen)
+macdHist    = macdLine - signalLine
+vwSrc       = close * volume
+vwMacdLine  = ta.ema(vwSrc, fastLen) - ta.ema(vwSrc, slowLen)
+vwSignalLine = ta.ema(vwMacdLine, sigLen)
+vwMacdHist  = vwMacdLine - vwSignalLine
+
+histBull = macdHist > 0  and macdHist  > macdHist[1]
+histBear = macdHist < 0  and macdHist  < macdHist[1]
+macdBull = macdLine > signalLine
+macdBear = macdLine < signalLine
+vwBull   = vwMacdLine > vwSignalLine
+vwBear   = vwMacdLine < vwSignalLine
+
+macdBullCount = (histBull ? 1 : 0) + (macdBull ? 1 : 0) + (vwBull ? 1 : 0)
+macdBearCount = (histBear ? 1 : 0) + (macdBear ? 1 : 0) + (vwBear ? 1 : 0)
+macdBullAgree = macdBullCount >= 2
+macdBearAgree = macdBearCount >= 2
+macdAlignText = tripleAlignText(histBull, macdBull, vwBull, histBear, macdBear, vwBear)
+
+// ── DPO ──────────────────────────────────────────────────────────────────────
+dpoShift     = math.floor(dpoLen / 2) + 1
+dpo          = close[dpoShift] - ta.sma(close, dpoLen)
+dpoUp        = dpo > dpo[1]
+dpoDown      = dpo < dpo[1]
+dpoBullStrong = dpo > 0
+dpoBearStrong = dpo < 0
+dpoBull      = dpoUp and (not useDpoZeroBias or dpoBullStrong)
+dpoBear      = dpoDown and (not useDpoZeroBias or dpoBearStrong)
+
+// ── TTM Squeeze ──────────────────────────────────────────────────────────────
+dev      = ta.stdev(close, ttmBbLen)
+bbUpper  = ta.sma(close, ttmBbLen) + ttmBbMult * dev
+bbLower  = ta.sma(close, ttmBbLen) - ttmBbMult * dev
+kcMid    = ta.sma(close, ttmKcLen)
+kcRange  = ta.sma(ta.tr(true), ttmKcLen)
+kcUpper  = kcMid + ttmKcMult * kcRange
+kcLower  = kcMid - ttmKcMult * kcRange
+ttmBase  = ((ta.highest(high, ttmMomLen) + ta.lowest(low, ttmMomLen)) / 2 + ta.sma(close, ttmMomLen)) / 2
+ttmRaw   = close - ttmBase
+ttmHist  = ta.linreg(ttmRaw, ttmMomLen, 0)
+ttmBull  = ttmHist > 0 and ttmHist > ttmHist[1]
+ttmBear  = ttmHist < 0 and ttmHist < ttmHist[1]
+ttmCurlUp   = ttmHist > ttmHist[1]
+ttmCurlDown = ttmHist < ttmHist[1]
+
+// ── Market Forecast Proxy (Stochastic-based) ─────────────────────────────────
+mfMomentum     = ta.sma(ta.stoch(close, high, low, 8), 2)
+mfNearTerm     = ta.sma(ta.stoch(close, high, low, 14), 3)
+mfIntermediate = ta.sma(ta.stoch(close, high, low, 30), 5)
+mfMomentumUp   = mfMomentum > mfMomentum[1]
+mfMomentumDown = mfMomentum < mfMomentum[1]
+mfNearUp       = mfNearTerm > mfNearTerm[1]
+mfNearDown     = mfNearTerm < mfNearTerm[1]
+mfInterBull    = mfIntermediate > mfBullThresh
+mfInterBear    = mfIntermediate < mfBearThresh
+mfBull         = mfMomentum > mfBullThresh and mfNearTerm > mfBullThresh and mfInterBull and mfMomentumUp and mfNearUp
+mfBear         = mfMomentum < mfBearThresh and mfNearTerm < mfBearThresh and mfInterBear and mfMomentumDown and mfNearDown
+mfNeutral      = not mfBull and not mfBear
+mfBullPressure = mfIntermediate > 60 or (mfIntermediate > 50 and mfNearTerm > mfNearTerm[1])
+mfBearPressure = mfIntermediate < 40 or (mfIntermediate < 50 and mfNearTerm < mfNearTerm[1])
+
+// ── RSI ───────────────────────────────────────────────────────────────────────
+rsiVal  = ta.rsi(close, rsiLen)
+rsiBull = rsiVal > rsiBullLevel and rsiVal >= rsiVal[1]
+rsiBear = rsiVal < rsiBearLevel and rsiVal <= rsiVal[1]
+
+// ── Triple DMI ────────────────────────────────────────────────────────────────
+[diPlusFast, diMinusFast, adxFast] = dmiCalc(dmiFastLen)
+[diPlusAvg,  diMinusAvg,  adxAvg]  = dmiCalc(dmiAvgLen)
+[diPlusSlow, diMinusSlow, adxSlow] = dmiCalc(dmiSlowLen)
+
+fastBullDmi = diPlusFast > diMinusFast
+fastBearDmi = diMinusFast > diPlusFast
+avgBullDmi  = diPlusAvg  > diMinusAvg
+avgBearDmi  = diMinusAvg > diPlusAvg
+slowBullDmi = diPlusSlow > diMinusSlow
+slowBearDmi = diMinusSlow > diPlusSlow
+
+bullDmiCount = (fastBullDmi ? 1 : 0) + (avgBullDmi ? 1 : 0) + (slowBullDmi ? 1 : 0)
+bearDmiCount = (fastBearDmi ? 1 : 0) + (avgBearDmi ? 1 : 0) + (slowBearDmi ? 1 : 0)
+dmiBullAgree = bullDmiCount >= 2
+dmiBearAgree = bearDmiCount >= 2
+dmiBullStrong = bullDmiCount == 3
+dmiBearStrong = bearDmiCount == 3
+dmiAlignText  = tripleAlignText(fastBullDmi, avgBullDmi, slowBullDmi, fastBearDmi, avgBearDmi, slowBearDmi)
+
+adxTrendCount = ((adxFast > adxThresh) ? 1 : 0) + ((adxAvg > adxThresh) ? 1 : 0) + ((adxSlow > adxThresh) ? 1 : 0)
+adxTrend      = adxTrendCount >= 2
+adxStrong     = adxTrendCount == 3
+adxAlignText  = adxFast > adxThresh and adxAvg > adxThresh and adxSlow > adxThresh ? "TREND F+A+S" :
+                adxFast > adxThresh and adxAvg > adxThresh ? "TREND F+A" :
+                adxAvg > adxThresh  and adxSlow > adxThresh ? "TREND A+S" :
+                adxFast > adxThresh ? "TREND FAST" : adxAvg > adxThresh ? "TREND AVG" :
+                adxSlow > adxThresh ? "TREND SLOW" : "WEAK"
+
+// ── Triple VFI ────────────────────────────────────────────────────────────────
+vfiFast = vfiCalc(vfiFastLen, vfiCoef, vfiVolCap)
+vfiAvg  = vfiCalc(vfiAvgLen,  vfiCoef, vfiVolCap)
+vfiSlow = vfiCalc(vfiSlowLen, vfiCoef, vfiVolCap)
+
+vfiFastBull = vfiFast > vfiFast[1]
+vfiFastBear = vfiFast < vfiFast[1]
+vfiAvgBull  = vfiAvg > vfiAvg[1] or vfiAvg > 0
+vfiAvgBear  = vfiAvg < vfiAvg[1] or vfiAvg < 0
+vfiSlowBull = vfiSlow > vfiSlow[1] or vfiSlow > 0
+vfiSlowBear = vfiSlow < vfiSlow[1] or vfiSlow < 0
+
+vfiBullCount = (vfiFastBull ? 1 : 0) + (vfiAvgBull ? 1 : 0) + (vfiSlowBull ? 1 : 0)
+vfiBearCount = (vfiFastBear ? 1 : 0) + (vfiAvgBear ? 1 : 0) + (vfiSlowBear ? 1 : 0)
+vfiBullAgree  = vfiBullCount >= 2
+vfiBearAgree  = vfiBearCount >= 2
+vfiBullStrong = vfiBullCount == 3
+vfiBearStrong = vfiBearCount == 3
+vfiAlignText  = tripleAlignText(vfiFastBull, vfiAvgBull, vfiSlowBull, vfiFastBear, vfiAvgBear, vfiSlowBear)
+
+// ── Triple ATR ────────────────────────────────────────────────────────────────
+atrFastV = ta.atr(atrFastLen)
+atrAvgV  = ta.atr(atrAvgLen2)
+atrSlowV = ta.atr(atrSlowLen)
+atrFastMa = ta.sma(atrFastV, atrMaLen)
+atrAvgMa  = ta.sma(atrAvgV,  atrMaLen)
+atrSlowMa = ta.sma(atrSlowV, atrMaLen)
+atrFastStrong = atrFastV > atrFastMa * atrTrendMult2
+atrAvgStrong  = atrAvgV  > atrAvgMa  * atrTrendMult2
+atrSlowStrong = atrSlowV > atrSlowMa * atrTrendMult2
+atrCount      = (atrFastStrong ? 1 : 0) + (atrAvgStrong ? 1 : 0) + (atrSlowStrong ? 1 : 0)
+atrStrong     = atrCount >= 2
+atrVeryStrong = atrCount == 3
+atrAlignText  = atrFastStrong and atrAvgStrong and atrSlowStrong ? "EXPAND F+A+S" :
+                atrFastStrong and atrAvgStrong ? "EXPAND F+A" :
+                atrAvgStrong  and atrSlowStrong ? "EXPAND A+S" :
+                atrFastStrong ? "EXPAND FAST" : atrAvgStrong ? "EXPAND AVG" :
+                atrSlowStrong ? "EXPAND SLOW" : "WEAK"
+
+// ── Triple PSAR ───────────────────────────────────────────────────────────────
+psarFastV = ta.sar(psarFastStep, psarFastStep, psarFastMax)
+psarAvgV  = ta.sar(psarAvgStep,  psarAvgStep,  psarAvgMax)
+psarSlowV = ta.sar(psarSlowStep, psarSlowStep, psarSlowMax)
+
+psarFastBull = close > psarFastV
+psarFastBear = close < psarFastV
+psarAvgBull  = close > psarAvgV
+psarAvgBear  = close < psarAvgV
+psarSlowBull = close > psarSlowV
+psarSlowBear = close < psarSlowV
+
+psarBullCount  = (psarFastBull ? 1 : 0) + (psarAvgBull ? 1 : 0) + (psarSlowBull ? 1 : 0)
+psarBearCount  = (psarFastBear ? 1 : 0) + (psarAvgBear ? 1 : 0) + (psarSlowBear ? 1 : 0)
+psarBullAgree  = psarBullCount >= 2
+psarBearAgree  = psarBearCount >= 2
+psarBullStrong = psarBullCount == 3
+psarBearStrong = psarBearCount == 3
+psarAlignText  = tripleAlignText(psarFastBull, psarAvgBull, psarSlowBull, psarFastBear, psarAvgBear, psarSlowBear)
+
+// ── ML SuperTrend (Volatility Clustering) ────────────────────────────────────
+supertrendSrc = hl2
+volatility    = ta.atr(supertrendAtrLen)
+upper_v       = ta.highest(volatility, training_data_period)
+lower_v       = ta.lowest(volatility,  training_data_period)
+high_volatility  = lower_v + (upper_v - lower_v) * highvol
+medium_volatility = lower_v + (upper_v - lower_v) * midvol
+low_volatility   = lower_v + (upper_v - lower_v) * lowvol
+
+var array<float> amean = array.new_float(1, high_volatility)
+var array<float> bmean = array.new_float(1, medium_volatility)
+var array<float> cmean = array.new_float(1, low_volatility)
+
+array<float> hv = array.new_float()
+array<float> mv = array.new_float()
+array<float> lv = array.new_float()
+
+if nz(volatility) > 0 and bar_index >= training_data_period - 1
+    while ((amean.size() == 1 ? true : (amean.first() != amean.get(1))) or
+           (bmean.size() == 1 ? true : (bmean.first() != bmean.get(1))) or
+           (cmean.size() == 1 ? true : (cmean.first() != cmean.get(1))))
+        hv.clear()
+        mv.clear()
+        lv.clear()
+        for i = training_data_period - 1 to 0
+            _1 = math.abs(volatility[i] - amean.first())
+            _2 = math.abs(volatility[i] - bmean.first())
+            _3 = math.abs(volatility[i] - cmean.first())
+            if _1 < _2 and _1 < _3
+                hv.unshift(volatility[i])
+            if _2 < _1 and _2 < _3
+                mv.unshift(volatility[i])
+            if _3 < _1 and _3 < _2
+                lv.unshift(volatility[i])
+        amean.unshift(hv.avg())
+        bmean.unshift(mv.avg())
+        cmean.unshift(lv.avg())
+
+hv_new = amean.first()
+mv_new = bmean.first()
+lv_new = cmean.first()
+
+vdist_a = math.abs(volatility - hv_new)
+vdist_b = math.abs(volatility - mv_new)
+vdist_c = math.abs(volatility - lv_new)
+distances = array.new_float()
+centroids = array.new_float()
+distances.push(vdist_a)
+distances.push(vdist_b)
+distances.push(vdist_c)
+centroids.push(hv_new)
+centroids.push(mv_new)
+centroids.push(lv_new)
+cluster           = distances.indexof(distances.min())
+assigned_centroid = cluster == -1 ? na : centroids.get(cluster)
+
+[ST, dir] = pine_supertrend(supertrendMult, assigned_centroid)
+
+// Classic SuperTrend (also used for exit signals)
+supertrendUp  = supertrendSrc - (supertrendMult * ta.sma(ta.tr(true), supertrendAtrLen))
+supertrendUp1 = nz(supertrendUp[1], supertrendUp)
+supertrendUp  := close[1] > supertrendUp1 ? math.max(supertrendUp, supertrendUp1) : supertrendUp
+supertrendDn  = supertrendSrc + (supertrendMult * ta.sma(ta.tr(true), supertrendAtrLen))
+supertrendDn1 = nz(supertrendDn[1], supertrendDn)
+supertrendDn  := close[1] < supertrendDn1 ? math.min(supertrendDn, supertrendDn1) : supertrendDn
+
+var int supertrendTrend = 1
+supertrendTrend := nz(supertrendTrend[1], supertrendTrend)
+supertrendTrend := supertrendTrend == -1 and close > supertrendDn1 ? 1 :
+                   supertrendTrend ==  1 and close < supertrendUp1 ? -1 : supertrendTrend
+
+supertrendBull      = supertrendTrend ==  1
+supertrendBear      = supertrendTrend == -1
+supertrendBuySignal  = supertrendTrend ==  1 and supertrendTrend[1] == -1
+supertrendSellSignal = supertrendTrend == -1 and supertrendTrend[1] ==  1
+supertrendBullLine  = supertrendBull ? supertrendUp : na
+supertrendBearLine  = supertrendBear ? supertrendDn : na
+supertrendText      = supertrendBull ? (supertrendBuySignal  ? "BULL FLIP" : "BULL") :
+                                       (supertrendSellSignal ? "BEAR FLIP" : "BEAR")
+
+// ── VWAP ──────────────────────────────────────────────────────────────────────
+newSession = ta.change(time("D")) != 0
+tp         = hlc3
+var float cumPV  = na
+var float cumV   = na
+var float cumP2V = na
+cumPV  := newSession ? tp * volume         : nz(cumPV)  + tp * volume
+cumV   := newSession ? volume              : nz(cumV)   + volume
+cumP2V := newSession ? volume * tp * tp    : nz(cumP2V) + volume * tp * tp
+vwap      = cumPV / cumV
+variance  = math.max(cumP2V / cumV - vwap * vwap, 0.0)
+vwapStdev = math.sqrt(variance)
+vwapP1    = vwap + vwapStdev
+vwapP2    = vwap + 2.0 * vwapStdev
+vwapM1    = vwap - vwapStdev
+vwapM2    = vwap - 2.0 * vwapStdev
+
+// ── Premarket Levels ──────────────────────────────────────────────────────────
+inPremarket = not na(time(timeframe.period, premarketSession))
+inRegular   = not na(time(timeframe.period, regularSessionStr))
+var float pmHigh = na
+var float pmLow  = na
+if newSession
+    pmHigh := na
+    pmLow  := na
+if inPremarket
+    pmHigh := na(pmHigh) ? high : math.max(pmHigh, high)
+    pmLow  := na(pmLow)  ? low  : math.min(pmLow, low)
+
+// ── Internals ─────────────────────────────────────────────────────────────────
+addClose  = request.security(addSymbol,  timeframe.period, close, ignore_invalid_symbol=true)
+trinClose = request.security(trinSymbol, timeframe.period, close, ignore_invalid_symbol=true)
+voldClose = request.security(voldSymbol, timeframe.period, close, ignore_invalid_symbol=true)
+
+addEma   = ta.ema(addClose,  internalsEmaLen)
+trinEma  = ta.ema(trinClose, internalsEmaLen)
+voldEma  = ta.ema(voldClose, internalsEmaLen)
+addSlope  = addEma  - addEma[1]
+trinSlope = trinEma - trinEma[1]
+voldSlope = voldEma - voldEma[1]
+
+addBullCont  = addEma  > 0 and addSlope  > 0
+addBearCont  = addEma  < 0 and addSlope  < 0
+addBullRev   = addEma  < 0 and addSlope  > 0
+addBearRev   = addEma  > 0 and addSlope  < 0
+addNeutral   = math.abs(addEma) < addNeutralBand
+trinBullCont = trinEma < 1 and trinSlope < 0
+trinBearCont = trinEma > 1 and trinSlope > 0
+trinBullRev  = trinEma > 1 and trinSlope < 0
+trinBearRev  = trinEma < 1 and trinSlope > 0
+trinNeutral  = math.abs(trinEma - 1) < trinNeutralBand
+voldBullCont = voldEma  > 0 and voldSlope > 0
+voldBearCont = voldEma  < 0 and voldSlope < 0
+voldBullRev  = voldEma  < 0 and voldSlope > 0
+voldBearRev  = voldEma  > 0 and voldSlope < 0
+voldNeutral  = math.abs(voldEma) < addNeutralBand
+
+bullContCount = (addBullCont ? 1 : 0) + (voldBullCont ? 1 : 0) + (trinBullCont ? 1 : 0)
+bearContCount = (addBearCont ? 1 : 0) + (voldBearCont ? 1 : 0) + (trinBearCont ? 1 : 0)
+bullRevCount  = (addBullRev  ? 1 : 0) + (voldBullRev  ? 1 : 0) + (trinBullRev  ? 1 : 0)
+bearRevCount  = (addBearRev  ? 1 : 0) + (voldBearRev  ? 1 : 0) + (trinBearRev  ? 1 : 0)
+
+internalsBullTrend = bullContCount >= 2
+internalsBearTrend = bearContCount >= 2
+internalsCallRev   = bullRevCount  >= 2
+internalsPutRev    = bearRevCount  >= 2
+
+addDpoShift       = math.floor(dpoLen / 2) + 1
+addDpo            = addClose[addDpoShift] - ta.sma(addClose, dpoLen)
+addDpoRising      = addDpo > addDpo[1]
+addDpoFalling     = addDpo < addDpo[1]
+addDpoBullConfirm = addDpo > 0 or (addDpo < 0 and addDpoRising)
+addDpoBearConfirm = addDpo < 0 or (addDpo > 0 and addDpoFalling)
+addDpoText        = addDpo > 0 ? (addDpoRising ? "ABOVE+RISING" : "ABOVE+FALLING") :
+                                 (addDpoRising ? "BELOW+RISING" : "BELOW+FALLING")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 5 – SCORING SYSTEM (Script 2 Combined Scoring)
+// ─────────────────────────────────────────────────────────────────────────────
+
+bullScore = 0
+bullScore += histBull              ? 1 : 0
+bullScore += macdBull              ? 1 : 0
+bullScore += vwBull                ? 1 : 0
+bullScore += dpoBull               ? 1 : 0
+bullScore += (close > vwap)        ? 1 : 0
+bullScore += (close > sma50)       ? 1 : 0
+bullScore += vfiFastBull           ? 1 : 0
+bullScore += dmiBullAgree          ? 1 : 0
+bullScore += psarBullAgree         ? 1 : 0
+bullScore += ttmBull               ? 1 : 0
+bullScore += mfBull                ? 1 : 0
+bullScore += addBullCont           ? 1 : 0
+bullScore += trinBullCont          ? 1 : 0
+bullScore += voldBullCont          ? 1 : 0
+bullScore += addDpoBullConfirm     ? 2 : 0
+bullScore += supertrendUseBoost ? (supertrendBull ? 1 : 0) : 0
+
+bearScore = 0
+bearScore += histBear              ? 1 : 0
+bearScore += macdBear              ? 1 : 0
+bearScore += vwBear                ? 1 : 0
+bearScore += dpoBear               ? 1 : 0
+bearScore += (close < vwap)        ? 1 : 0
+bearScore += (close < sma50)       ? 1 : 0
+bearScore += vfiFastBear           ? 1 : 0
+bearScore += dmiBearAgree          ? 1 : 0
+bearScore += psarBearAgree         ? 1 : 0
+bearScore += ttmBear               ? 1 : 0
+bearScore += mfBear                ? 1 : 0
+bearScore += addBearCont           ? 1 : 0
+bearScore += trinBearCont          ? 1 : 0
+bearScore += voldBearCont          ? 1 : 0
+bearScore += addDpoBearConfirm     ? 2 : 0
+bearScore += supertrendUseBoost ? (supertrendBear ? 1 : 0) : 0
+
+// Extended totals (include bonus points from strong alignment)
+bullTotal = bullScore + (dmiBullStrong ? 1 : 0) + (vfiBullStrong ? 1 : 0) + (psarBullStrong ? 1 : 0) +
+            (adxStrong ? 1 : 0) + (atrVeryStrong ? 1 : 0) + (internalsBullTrend ? 1 : 0) +
+            (rsiBull ? 1 : 0) + (mfBullPressure ? 1 : 0) + (supertrendBull ? 1 : 0)
+bearTotal = bearScore + (dmiBearStrong ? 1 : 0) + (vfiBearStrong ? 1 : 0) + (psarBearStrong ? 1 : 0) +
+            (adxStrong ? 1 : 0) + (atrVeryStrong ? 1 : 0) + (internalsBearTrend ? 1 : 0) +
+            (rsiBear ? 1 : 0) + (mfBearPressure ? 1 : 0) + (supertrendBear ? 1 : 0)
+
+totalScore      = math.max(bullTotal, bearTotal)
+// confidencePct: each point ≈ 6%, capped at 100
+bullConfidencePct = math.min(100, math.round(bullTotal * 6.0))
+bearConfidencePct = math.min(100, math.round(bearTotal * 6.0))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 6 – REGIME STATE MACHINE (Script 2 Layer)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Structure locks (price above/below both VWAP and SMA50)
+bullStructureLock = close > vwap and close > sma50
+bearStructureLock = close < vwap and close < sma50
+vwapDistPct = math.abs(close - vwap) / close * 100.0
+smaDistPct  = math.abs(close - sma50) / close * 100.0
+clearBullStructure = close > vwap and close > sma50 and vwapDistPct > 0.03 and smaDistPct > 0.03
+clearBearStructure = close < vwap and close < sma50 and vwapDistPct > 0.03 and smaDistPct > 0.03
+
+// Price momentum stacking (core + TTM)
+bullStack     = requireTtmAgreement ? (histBull and macdBull and vwBull and dpoBull and ttmBull) :
+                                       (histBull and macdBull and vwBull and dpoBull)
+bearStack     = requireTtmAgreement ? (histBear and macdBear and vwBear and dpoBear and ttmBear) :
+                                       (histBear and macdBear and vwBear and dpoBear)
+bullMomentumSupport = histBull or macdBull or vwBull or dpoBull or ttmBull
+bearMomentumSupport = histBear or macdBear or vwBear or dpoBear or ttmBear
+bullStrengthening = macdHist > macdHist[1] and dpo > dpo[1] and ttmHist > ttmHist[1]
+bearStrengthening = macdHist < macdHist[1] and dpo < dpo[1] and ttmHist < ttmHist[1]
+bullExpanding = macdHist > macdHist[1] and macdHist[1] > macdHist[2] and ttmHist > ttmHist[1]
+bearExpanding = macdHist < macdHist[1] and macdHist[1] < macdHist[2] and ttmHist < ttmHist[1]
+
+// Early price scoring for cloud promote
+priceBullEarlyScore = (macdHist > 0 ? 1 : 0) + (macdLine > signalLine ? 1 : 0) +
+                      (vwMacdLine > vwSignalLine ? 1 : 0) + (dpo > dpo[1] ? 1 : 0) +
+                      (close > vwap ? 1 : 0) + (close > sma50 ? 1 : 0)
+priceBearEarlyScore = (macdHist < 0 ? 1 : 0) + (macdLine < signalLine ? 1 : 0) +
+                      (vwMacdLine < vwSignalLine ? 1 : 0) + (dpo < dpo[1] ? 1 : 0) +
+                      (close < vwap ? 1 : 0) + (close < sma50 ? 1 : 0)
+priceBullEarly = priceBullEarlyScore >= 4 and priceBearEarlyScore <= 2
+priceBearEarly = priceBearEarlyScore >= 4 and priceBullEarlyScore <= 2
+priceCloudBullPromote = priceBullEarly and close > vwap and close > sma50
+priceCloudBearPromote = priceBearEarly and close < vwap and close < sma50
+
+// Regime state transitions
+bullTrendBase = bullStructureLock and bullScore >= 7 and bullStack and dmiBullAgree and
+                psarBullAgree and clearBullStructure and
+                (internalsBullTrend or rsiBull or mfBullPressure or ttmBull or vfiBullAgree or supertrendBull)
+bearTrendBase = bearStructureLock and bearScore >= 7 and bearStack and dmiBearAgree and
+                psarBearAgree and clearBearStructure and
+                (internalsBearTrend or rsiBear or mfBearPressure or ttmBear or vfiBearAgree or supertrendBear)
+bullTrendNow  = bullTrendBase or
+                (bullScore >= 6 and priceCloudBullPromote and psarBullAgree and
+                 (not supertrendUseBoost or supertrendBull))
+bearTrendNow  = bearTrendBase or
+                (bearScore >= 6 and priceCloudBearPromote and psarBearAgree and
+                 (not supertrendUseBoost or supertrendBear))
+bullChopNow   = bullStructureLock and not bullTrendNow and bullScore >= 6 and
+                psarBullAgree and bullMomentumSupport and
+                not (bullScore >= 7 and bullStack and dmiBullAgree)
+bearChopNow   = bearStructureLock and not bearTrendNow and bearScore >= 6 and
+                psarBearAgree and bearMomentumSupport and
+                not (bearScore >= 7 and bearStack and dmiBearAgree)
+
+var int regimeState = 0
+stayBullTrend = regimeState[1] ==  2 and bullStructureLock and psarBullAgree and bullScore >= 6 and
+                not bearTrendNow and (not supertrendUseBoost or supertrendBull)
+stayBearTrend = regimeState[1] == -2 and bearStructureLock and psarBearAgree and bearScore >= 6 and
+                not bullTrendNow and (not supertrendUseBoost or supertrendBear)
+regimeState  := bullTrendNow ? 2 : bearTrendNow ? -2 :
+                stayBullTrend ? 2 : stayBearTrend ? -2 :
+                bullChopNow and not bearChopNow ? 1 :
+                bearChopNow and not bullChopNow ? -1 : 0
+
+adv_bullTrend = regimeState ==  2
+adv_bearTrend = regimeState == -2
+adv_bullChop  = regimeState ==  1
+adv_bearChop  = regimeState == -1
+adv_neutral   = regimeState ==  0 and bullScore < 4 and bearScore < 4
+adv_bullRegime = regimeState > 0
+adv_bearRegime = regimeState < 0
+
+bullDirectionalChop = adv_bullChop and supertrendBull
+bearDirectionalChop = adv_bearChop and supertrendBear
+trueNeutralChop     = adv_neutral or (adv_bullChop and not supertrendBull) or (adv_bearChop and not supertrendBear)
+chopTypeText        = bullDirectionalChop ? "BULL DIR CHOP" :
+                      bearDirectionalChop ? "BEAR DIR CHOP" :
+                      trueNeutralChop     ? "TRUE CHOP" : "TREND"
+
+adv_bullTrendStart = regimeState ==  2 and regimeState[1] !=  2
+adv_bearTrendStart = regimeState == -2 and regimeState[1] != -2
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 7 – SESSION / TRADING HOURS
+// ─────────────────────────────────────────────────────────────────────────────
+exchangeHour   = hour + timezoneOffset
+exchangeMinute = minute
+isWithinTradingHours = (exchangeHour > tradingHourStart or
+                        (exchangeHour == tradingHourStart and exchangeMinute >= tradingMinStart)) and
+                       exchangeHour < tradingHourEnd
+sessionName = isWithinTradingHours ? "🟢 ACTIVE" : "🔴 CLOSED"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 8 – FIBONACCI (Swing-Based)
+// ─────────────────────────────────────────────────────────────────────────────
+swingHigh  = ta.highest(high, swingLookback)
+swingLow   = ta.lowest(low,  swingLookback)
+swingRange = swingHigh - swingLow
+
+fib_0    = swingLow
+fib_236  = swingLow + swingRange * 0.236
+fib_382  = swingLow + swingRange * 0.382
+fib_500  = swingLow + swingRange * 0.500
+fib_618  = swingLow + swingRange * 0.618
+fib_786  = swingLow + swingRange * 0.786
+fib_1000 = swingHigh
+fib_1272 = swingHigh + swingRange * 0.272
+fib_1618 = swingHigh + swingRange * 0.618
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 9 – ENTRY / EXIT CONDITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Cloud zones
+topReversalZone    = cloudPercent >= topReversalThresh
+bottomReversalZone = cloudPercent <= bottomReversalThresh
+
+// Ignition signals (tight combo of momentum indicators)
+bullIgnition = histBull and macdBull and vwBull and dpoUp and ttmCurlUp and fastBullDmi and vfiFastBull
+bearIgnition = histBear and macdBear and vwBear and dpoDown and ttmCurlDown and fastBearDmi and vfiFastBear
+
+// VWAP touch / structure zones for chasing guard
+callTrendZone       = (close > vwap or ta.crossover(close, vwap)) and (close > sma50 or ta.crossover(close, sma50))
+putTrendZone        = (close < vwap or ta.crossunder(close, vwap)) and (close < sma50 or ta.crossunder(close, sma50))
+callNotChasing      = (close < vwapP1) or (close >= vwapP1 and bullStrengthening) or (close >= vwapP2 and bullExpanding)
+putNotChasing       = (close > vwapM1) or (close <= vwapM1 and bearStrengthening) or (close <= vwapM2 and bearExpanding)
+
+// Optional internals confirmation
+internalsCallOk = not useInternalsFilter or internalsBullTrend or internalsCallRev or addNeutral or voldNeutral or trinNeutral
+internalsPutOk  = not useInternalsFilter or internalsBearTrend or internalsPutRev  or addNeutral or voldNeutral or trinNeutral
+
+// ─── CALL (LONG) Entry ────────────────────────────────────────────────────────
+// All conditions must be true:
+//  1. NAMA primary regime flip to bull (mandatory)
+//  2. Price above NAMA envelope
+//  3. bullIgnition (MACD+DPO+TTM+DMI all bull)
+//  4. RSI bullish
+//  5. Combined confidence ≥ confThresh %
+//  6. Regime state = BULL TREND or directional BULL CHOP
+//  7. PSAR agreement (minimum 2/3)
+//  8. Optional: Internals bullish or neutral
+callEntry = strategy.position_size == 0 and
+            isWithinTradingHours and
+            namaBullFlip and
+            priceAboveNama and
+            bullIgnition and
+            rsiBull and
+            bullConfidencePct >= confThresh and
+            (adv_bullTrend or bullDirectionalChop) and
+            psarBullAgree and
+            callNotChasing and
+            internalsCallOk and
+            (not useMfFilter or mfBull or mfNeutral)
+
+// ─── PUT (SHORT) Entry ────────────────────────────────────────────────────────
+putEntry = strategy.position_size == 0 and
+           isWithinTradingHours and
+           namaBearFlip and
+           priceBelowNama and
+           bearIgnition and
+           rsiBear and
+           bearConfidencePct >= confThresh and
+           (adv_bearTrend or bearDirectionalChop) and
+           psarBearAgree and
+           putNotChasing and
+           internalsPutOk and
+           (not useMfFilter or mfBear or mfNeutral)
+
+// ─── Exit Conditions ─────────────────────────────────────────────────────────
+hardStopCall = close < namaBot                 // Hard stop: price breaks NAMA bottom
+hardStopPut  = close > namaTop                 // Hard stop: price breaks NAMA top
+
+var int entryBar = na
+barsInTrade = na(entryBar) ? 0 : (bar_index - entryBar)
+timeExit    = barsInTrade >= maxHoldBars
+
+// SuperTrend flip also triggers exit
+stFlipExitCall = strategy.position_size > 0 and supertrendSellSignal
+stFlipExitPut  = strategy.position_size < 0 and supertrendBuySignal
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 10 – TRADE EXECUTION
+// ─────────────────────────────────────────────────────────────────────────────
+if callEntry
+    strategy.entry("CALL", strategy.long, comment="CALL – NAMA Bull Flip + " + str.tostring(bullConfidencePct) + "% conf")
+    entryBar := bar_index
+
+if putEntry
+    strategy.entry("PUT", strategy.short, comment="PUT – NAMA Bear Flip + " + str.tostring(bearConfidencePct) + "% conf")
+    entryBar := bar_index
+
+if strategy.position_size > 0 and (hardStopCall or timeExit or stFlipExitCall)
+    strategy.close("CALL", comment=hardStopCall ? "Hard Stop" : stFlipExitCall ? "ST Flip Exit" : "Time Exit")
+    entryBar := na
+
+if strategy.position_size < 0 and (hardStopPut or timeExit or stFlipExitPut)
+    strategy.close("PUT", comment=hardStopPut ? "Hard Stop" : stFlipExitPut ? "ST Flip Exit" : "Time Exit")
+    entryBar := na
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 11 – VISUAL LAYER
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Regime Colors ─────────────────────────────────────────────────────────────
+bullTrendColor = color.new(#4c53af, 0)
+bullChopColor  = color.new(color.green, 65)
+bearTrendColor = color.new(#980707, 0)
+bearChopColor  = color.new(color.red, 65)
+neutralColor   = color.new(color.yellow, 70)
+
+regimeBgColor = adv_bullTrend ? bullTrendColor : adv_bullChop ? bullChopColor :
+                adv_bearTrend ? bearTrendColor : adv_bearChop ? bearChopColor : neutralColor
+regimeText    = adv_bullTrend ? "BULL TREND" : adv_bullChop ? "BULL CHOP" :
+                adv_bearTrend ? "BEAR TREND" : adv_bearChop ? "BEAR CHOP" : "NEUTRAL"
+regimeBarClr  = adv_bullTrend ? color.green : adv_bullChop ? color.lime :
+                adv_bearTrend ? color.red   : adv_bearChop ? color.maroon : color.yellow
+
+bgcolor(showRegimeBg ? regimeBgColor : na)
+barcolor(showRegimeBars ? regimeBarClr : na)
+
+// ── Live Regime Label ─────────────────────────────────────────────────────────
+var label regimeLbl = na
+if showRegimeLabel and barstate.islast
+    label.delete(regimeLbl)
+    regimeLbl := label.new(bar_index, high, regimeText,
+                  style=label.style_label_down,
+                  color=adv_bullTrend ? color.green : adv_bullChop ? color.lime :
+                        adv_bearTrend ? color.red   : adv_bearChop ? color.maroon : color.yellow,
+                  textcolor=color.black, size=size.small)
+
+// ── NAMA Envelope & EMA ───────────────────────────────────────────────────────
+namaRegimeColor = namaBullTrend  ? color.green :
+                  namaBearTrend  ? color.red   :
+                  namaBullChopAbove or namaBullChopBetween ? color.lime :
+                  namaBearChopBelow or namaBearChopBetween ? #ff6b6b : color.gray
+plot(nama_val, "NAMA", color=namaRegimeColor, linewidth=3)
+plot(ema24,    "EMA 24", color=color.new(color.orange, 0), linewidth=2)
+
+// NAMA cloud fill
+cTop = plot(namaTop, display=display.none)
+cBot = plot(namaBot, display=display.none)
+namaCloudColor = namaBullTrend  ? color.new(#26a69a, 70) :
+                 namaBearTrend  ? color.new(#ef5350, 70) :
+                 namaBullChopAbove or namaBullChopBetween ? color.new(#00ff00, 85) :
+                 namaBearChopBelow or namaBearChopBetween ? color.new(#ff6b6b, 85) :
+                                                            color.new(#ffd700, 92)
+fill(cTop, cBot, color=namaCloudColor)
+
+// ── Price Regime Cloud ────────────────────────────────────────────────────────
+priceBullCloud = priceBullEarlyScore >= 4 and priceBearEarlyScore <= 2
+priceBearCloud = priceBearEarlyScore >= 4 and priceBullEarlyScore <= 2
+priceCloudColor = priceBullCloud ? color.new(color.green, 72) :
+                  priceBearCloud ? color.new(color.red,   72) : color.new(color.yellow, 82)
+ph = plot(showPriceCloud ? high : na, "PriceHighCloud", display=display.none)
+pl = plot(showPriceCloud ? low  : na, "PriceLowCloud",  display=display.none)
+fill(ph, pl, color=priceCloudColor, title="PriceRegimeCloud")
+
+// ── SMA50 / VWAP ──────────────────────────────────────────────────────────────
+plot(sma50,  "SMA 50", color=color.new(color.blue,   50), linewidth=1)
+plot(vwap,   "VWAP",   color=color.yellow, linewidth=2)
+plot(showVwapBands ? vwapP1 : na, "VWAP+1σ", color=color.new(color.blue,   0))
+plot(showVwapBands ? vwapP2 : na, "VWAP+2σ", color=color.new(color.blue,  35))
+plot(showVwapBands ? vwapM1 : na, "VWAP-1σ", color=color.new(color.orange, 0))
+plot(showVwapBands ? vwapM2 : na, "VWAP-2σ", color=color.new(color.orange,35))
+
+// ── SuperTrend Lines ──────────────────────────────────────────────────────────
+plot(supertrendBullLine, "SuperTrend Bull", color=color.green, linewidth=2, style=plot.style_linebr)
+plot(supertrendBearLine, "SuperTrend Bear", color=color.red,   linewidth=2, style=plot.style_linebr)
+
+// ML SuperTrend fill
+bodyMiddle = plot(barstate.isfirst ? na : (open + close) / 2, "Body Middle", display=display.none)
+upTrend    = plot(close > ST ? ST : na, color=color.new(stGreen, t1), style=plot.style_linebr)
+downTrend  = plot(close < ST ? ST : na, color=color.new(stRed,   t1), style=plot.style_linebr)
+fill(bodyMiddle, upTrend,   (open + close) / 2, ST, color.new(stGreen, t2), color.new(stGreen, t1))
+fill(bodyMiddle, downTrend, ST, (open + close) / 2, color.new(stRed, t1),   color.new(stRed,   t2))
+
+plotshape(ta.crossunder(dir, 0) ? ST : na, "ML ST Bull Flip", shape.labelup,   location.absolute, stGreen, text="▲", textcolor=chart.fg_color, size=size.small)
+plotshape(ta.crossover(dir, 0)  ? ST : na, "ML ST Bear Flip", shape.labeldown, location.absolute, stRed,   text="▼", textcolor=chart.fg_color, size=size.small)
+
+// ── Premarket H/L ─────────────────────────────────────────────────────────────
+plot(showPremarket and inRegular ? pmHigh : na, "Premarket High", color=color.fuchsia, linewidth=2, style=plot.style_linebr)
+plot(showPremarket and inRegular ? pmLow  : na, "Premarket Low",  color=color.aqua,    linewidth=2, style=plot.style_linebr)
+
+// ── Entry/Exit Labels ─────────────────────────────────────────────────────────
+if showLabels and callEntry
+    label.new(bar_index, low, "▲ CALL\n" + str.tostring(bullConfidencePct) + "%",
+              style=label.style_label_up, color=color.new(color.green, 30),
+              textcolor=color.white, size=size.small)
+if showLabels and putEntry
+    label.new(bar_index, high, "▼ PUT\n" + str.tostring(bearConfidencePct) + "%",
+              style=label.style_label_down, color=color.new(color.red, 30),
+              textcolor=color.white, size=size.small)
+if showLabels and strategy.position_size > 0 and (hardStopCall or timeExit or stFlipExitCall)
+    label.new(bar_index, high, "EXIT CALL",
+              style=label.style_label_down, color=color.new(color.red, 50),
+              textcolor=color.white, size=size.tiny)
+if showLabels and strategy.position_size < 0 and (hardStopPut or timeExit or stFlipExitPut)
+    label.new(bar_index, low, "EXIT PUT",
+              style=label.style_label_up, color=color.new(color.green, 50),
+              textcolor=color.white, size=size.tiny)
+
+// ── Mode Labels ───────────────────────────────────────────────────────────────
+if showModeLabels and callEntry
+    label.new(bar_index, low, "CALL-CONT",
+              style=label.style_label_up, color=color.new(color.green, 65),
+              textcolor=color.white, size=size.tiny)
+if showModeLabels and putEntry
+    label.new(bar_index, high, "PUT-CONT",
+              style=label.style_label_down, color=color.new(color.red, 65),
+              textcolor=color.white, size=size.tiny)
+
+// ── Raw signal shapes ─────────────────────────────────────────────────────────
+plotshape(showSignals and callEntry, "CALL", shape.labelup,   location.belowbar, color.green, text="CALL", textcolor=color.white, size=size.small)
+plotshape(showSignals and putEntry,  "PUT",  shape.labeldown, location.abovebar, color.red,   text="PUT",  textcolor=color.white, size=size.small)
+
+// ── Fibonacci ─────────────────────────────────────────────────────────────────
+plot(showFibonacci ? fib_0    : na, "Fib 0.0%",   color=color.new(color.green,  70), linewidth=1)
+plot(showFibonacci ? fib_236  : na, "Fib 23.6%",  color=color.new(color.lime,   60), linewidth=1)
+plot(showFibonacci ? fib_382  : na, "Fib 38.2%",  color=color.new(color.lime,   50), linewidth=2)
+plot(showFibonacci ? fib_500  : na, "Fib 50.0%",  color=color.new(color.yellow, 50), linewidth=2)
+plot(showFibonacci ? fib_618  : na, "Fib 61.8%",  color=color.new(color.orange, 50), linewidth=2)
+plot(showFibonacci ? fib_786  : na, "Fib 78.6%",  color=color.new(color.orange, 60), linewidth=1)
+plot(showFibonacci ? fib_1000 : na, "Fib 100%",   color=color.new(color.red,    70), linewidth=1)
+plot(showFibonacci ? fib_1272 : na, "Fib 127.2%", color=color.new(color.red,    40), linewidth=1)
+plot(showFibonacci ? fib_1618 : na, "Fib 161.8%", color=color.new(color.red,    40), linewidth=1)
+
+// ── Cloud Percentage Label ────────────────────────────────────────────────────
+var label cloudPctLabel = na
+if showCloudPercent and barstate.islast
+    if not na(cloudPctLabel)
+        label.delete(cloudPctLabel)
+    cloudPctLabel := label.new(
+         bar_index,
+         namaTop + (namaTop - namaBot) * 0.05,
+         str.tostring(math.round(cloudPercent, 1)) + "%",
+         xloc=xloc.bar_index, yloc=yloc.price,
+         color=topReversalZone ? color.new(color.red, 80) :
+               bottomReversalZone ? color.new(color.green, 80) : color.new(color.gray, 80),
+         textcolor=topReversalZone ? color.red : bottomReversalZone ? color.green : color.gray,
+         style=label.style_label_center, size=size.large)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 12 – DASHBOARD
+// ─────────────────────────────────────────────────────────────────────────────
+var table dash = na
+tC = chart.fg_color
+
+if showDashboard and barstate.islast
+    if na(dash)
+        dash := table.new(position.top_right, 2, 32, border_width=1)
+
+    // ── Row 0: Trading Hours ─────────────────────────────────────────────────
+    table.cell(dash, 0, 0, "HOURS",        bgcolor=color.black,                          text_color=tC)
+    table.cell(dash, 1, 0, sessionName,    bgcolor=isWithinTradingHours ? color.green : color.red, text_color=color.white)
+
+    // ── Row 1: NAMA Regime (Primary) ─────────────────────────────────────────
+    namaRegText  = namaBullTrend ? "🟢 BULL TREND" : namaBearTrend ? "🔴 BEAR TREND" :
+                   namaBullChopAbove ? "🟡 BULL CHOP+" : namaBearChopBelow ? "🟣 BEAR CHOP-" :
+                   namaBullChopBetween ? "🟢 BULL CHOP~" : namaBearChopBetween ? "🔴 BEAR CHOP~" : "⭕ NEUTRAL"
+    namaRegClr   = namaBullTrend or namaBullChopAbove or namaBullChopBetween ? color.green :
+                   namaBearTrend or namaBearChopBelow or namaBearChopBetween ? color.red : color.gray
+    table.cell(dash, 0, 1, "NAMA REGIME",  bgcolor=color.black,  text_color=tC)
+    table.cell(dash, 1, 1, namaRegText,    bgcolor=namaRegClr,   text_color=color.white)
+
+    // ── Row 2: Adv Regime State (Script 2) ───────────────────────────────────
+    advRegText  = adv_bullTrend ? "BULL TREND" : adv_bullChop ? "BULL CHOP" :
+                  adv_bearTrend ? "BEAR TREND" : adv_bearChop ? "BEAR CHOP" : "NEUTRAL"
+    advRegClr   = adv_bullTrend ? color.green : adv_bullChop ? color.lime :
+                  adv_bearTrend ? color.red   : adv_bearChop ? color.maroon : color.yellow
+    table.cell(dash, 0, 2, "REGIME STATE", bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 2, advRegText,     bgcolor=advRegClr,   text_color=color.black)
+
+    // ── Row 3: NAMA Bull Flip ─────────────────────────────────────────────────
+    table.cell(dash, 0, 3, "NAMA BULL FLIP", bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 3, namaBullFlip ? "🟢 FLIPPING" : "—",
+               bgcolor=namaBullFlip ? color.new(color.green, 30) : color.gray, text_color=color.white)
+
+    // ── Row 4: NAMA Bear Flip ─────────────────────────────────────────────────
+    table.cell(dash, 0, 4, "NAMA BEAR FLIP", bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 4, namaBearFlip ? "🔴 FLIPPING" : "—",
+               bgcolor=namaBearFlip ? color.new(color.red, 30) : color.gray, text_color=color.white)
+
+    // ── Row 5: Confluence Score ───────────────────────────────────────────────
+    confScore = strategy.position_size >= 0 ? bullConfidencePct : bearConfidencePct
+    confText  = str.tostring(confScore) + "% " + scoreText(totalScore)
+    confClr   = confScore >= confThresh ? color.green : confScore >= 40 ? color.yellow : color.red
+    table.cell(dash, 0, 5, "CONFLUENCE %",  bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 5, confText,        bgcolor=confClr,     text_color=color.black)
+
+    // ── Row 6: Bull Score ─────────────────────────────────────────────────────
+    table.cell(dash, 0, 6, "BULL SCORE", bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 6, str.tostring(bullTotal) + " / 26",
+               bgcolor=bullTotal >= 10 ? color.green : bullTotal >= 6 ? color.lime : color.gray,
+               text_color=color.black)
+
+    // ── Row 7: Bear Score ─────────────────────────────────────────────────────
+    table.cell(dash, 0, 7, "BEAR SCORE", bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 7, str.tostring(bearTotal) + " / 26",
+               bgcolor=bearTotal >= 10 ? color.red : bearTotal >= 6 ? color.maroon : color.gray,
+               text_color=color.white)
+
+    // ── Row 8: Cloud % / Zone ─────────────────────────────────────────────────
+    cloudTxt = str.tostring(math.round(cloudPercent, 1)) + "%"
+    cloudBg  = topReversalZone ? color.new(color.red, 60) :
+               bottomReversalZone ? color.new(color.green, 60) : color.new(color.gray, 60)
+    table.cell(dash, 0, 8, "CLOUD %", bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 8, cloudTxt,  bgcolor=cloudBg,     text_color=color.white)
+
+    // ── Row 9: SuperTrend ────────────────────────────────────────────────────
+    table.cell(dash, 0, 9, "SUPERTREND",    bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 9, supertrendText,
+               bgcolor=supertrendBull ? color.green : color.red, text_color=color.black)
+
+    // ── Row 10: MACD Alignment ────────────────────────────────────────────────
+    table.cell(dash, 0, 10, "MACD ALIGN",  bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 10, macdAlignText,
+               bgcolor=macdBullAgree ? color.green : macdBearAgree ? color.red : color.yellow,
+               text_color=color.black)
+
+    // ── Row 11: DMI Alignment ─────────────────────────────────────────────────
+    table.cell(dash, 0, 11, "DMI ALIGN",   bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 11, dmiAlignText,
+               bgcolor=dmiBullAgree ? color.green : dmiBearAgree ? color.red : color.yellow,
+               text_color=color.black)
+
+    // ── Row 12: VFI Alignment ─────────────────────────────────────────────────
+    table.cell(dash, 0, 12, "VFI ALIGN",   bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 12, vfiAlignText,
+               bgcolor=vfiBullAgree ? color.green : vfiBearAgree ? color.red : color.yellow,
+               text_color=color.black)
+
+    // ── Row 13: PSAR Alignment ────────────────────────────────────────────────
+    table.cell(dash, 0, 13, "PSAR ALIGN",  bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 13, psarAlignText,
+               bgcolor=psarBullAgree ? color.green : psarBearAgree ? color.red : color.yellow,
+               text_color=color.black)
+
+    // ── Row 14: ADX ───────────────────────────────────────────────────────────
+    table.cell(dash, 0, 14, "ADX",         bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 14, adxAlignText,
+               bgcolor=adxStrong ? color.green : adxTrend ? color.lime : color.yellow,
+               text_color=color.black)
+
+    // ── Row 15: ATR Expansion ─────────────────────────────────────────────────
+    table.cell(dash, 0, 15, "ATR EXPAND",  bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 15, atrAlignText,
+               bgcolor=atrVeryStrong ? color.green : atrStrong ? color.lime : color.yellow,
+               text_color=color.black)
+
+    // ── Row 16: Ignition ──────────────────────────────────────────────────────
+    ignText = bullIgnition ? "🟢 BULL IGNITE" : bearIgnition ? "🔴 BEAR IGNITE" : "—"
+    ignClr  = bullIgnition ? color.green : bearIgnition ? color.red : color.gray
+    table.cell(dash, 0, 16, "IGNITION",    bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 16, ignText,       bgcolor=ignClr,      text_color=color.white)
+
+    // ── Row 17: RSI ───────────────────────────────────────────────────────────
+    rsiText = rsiBull ? "🟢 BULL" : rsiBear ? "🔴 BEAR" : str.tostring(math.round(rsiVal, 1))
+    rsiClr  = rsiBull ? color.green : rsiBear ? color.red : color.gray
+    table.cell(dash, 0, 17, "RSI",         bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 17, rsiText,       bgcolor=rsiClr,      text_color=color.white)
+
+    // ── Row 18: $ADD ──────────────────────────────────────────────────────────
+    addTxt = addBullCont ? "BULL CONT" : addBullRev ? "BULL REV" :
+             addBearCont ? "BEAR CONT" : addBearRev ? "BEAR REV" : "NEUTRAL"
+    addClr = addBullCont ? color.green : addBullRev ? color.lime :
+             addBearCont ? color.red   : addBearRev ? color.maroon : color.yellow
+    table.cell(dash, 0, 18, "$ADD",        bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 18, addTxt,        bgcolor=addClr,      text_color=color.black)
+
+    // ── Row 19: $TRIN ─────────────────────────────────────────────────────────
+    trinTxt = trinBullCont ? "BULL CONT" : trinBullRev ? "BULL REV" :
+              trinBearCont ? "BEAR CONT" : trinBearRev ? "BEAR REV" : "NEUTRAL"
+    trinClr = trinBullCont ? color.green : trinBullRev ? color.lime :
+              trinBearCont ? color.red   : trinBearRev ? color.maroon : color.yellow
+    table.cell(dash, 0, 19, "$TRIN",       bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 19, trinTxt,       bgcolor=trinClr,     text_color=color.black)
+
+    // ── Row 20: $VOLD ─────────────────────────────────────────────────────────
+    voldTxt = voldBullCont ? "BULL CONT" : voldBullRev ? "BULL REV" :
+              voldBearCont ? "BEAR CONT" : voldBearRev ? "BEAR REV" : "NEUTRAL"
+    voldClr = voldBullCont ? color.green : voldBullRev ? color.lime :
+              voldBearCont ? color.red   : voldBearRev ? color.maroon : color.yellow
+    table.cell(dash, 0, 20, "$VOLD",       bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 20, voldTxt,       bgcolor=voldClr,     text_color=color.black)
+
+    // ── Row 21: ADD DPO ───────────────────────────────────────────────────────
+    table.cell(dash, 0, 21, "ADD DPO",     bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 21, addDpoText,
+               bgcolor=addDpoBullConfirm ? color.green : addDpoBearConfirm ? color.red : color.yellow,
+               text_color=color.black)
+
+    // ── Row 22: Chop Type ─────────────────────────────────────────────────────
+    table.cell(dash, 0, 22, "CHOP TYPE",   bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 22, chopTypeText,
+               bgcolor=bullDirectionalChop ? color.lime : bearDirectionalChop ? color.maroon :
+                       trueNeutralChop ? color.orange : color.green,
+               text_color=color.black)
+
+    // ── Row 23: Vol Cluster (ML) ──────────────────────────────────────────────
+    table.cell(dash, 0, 23, "VOL CLASS",   bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 23, cluster == 0 ? "HIGH VOL" : cluster == 1 ? "MEDIUM VOL" : "LOW VOL",
+               bgcolor=cluster == 0 ? color.red : cluster == 1 ? color.yellow : color.green,
+               text_color=color.black)
+
+    // ── Row 24: Swing High/Low ────────────────────────────────────────────────
+    table.cell(dash, 0, 24, "SWING HIGH",  bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 24, str.tostring(math.round(swingHigh, 2)),
+               bgcolor=color.new(color.red, 80), text_color=color.white)
+    table.cell(dash, 0, 25, "SWING LOW",   bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 25, str.tostring(math.round(swingLow, 2)),
+               bgcolor=color.new(color.green, 80), text_color=color.white)
+
+    // ── Row 26: Entry Signal ──────────────────────────────────────────────────
+    sigTxt = callEntry ? ("✅ CALL " + str.tostring(bullConfidencePct) + "%") :
+             putEntry  ? ("✅ PUT  " + str.tostring(bearConfidencePct) + "%") : "⏸  WAIT"
+    sigClr = callEntry ? color.green : putEntry ? color.red : color.gray
+    table.cell(dash, 0, 26, "SIGNAL",      bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 26, sigTxt,        bgcolor=sigClr,      text_color=color.white)
+
+    // ── Row 27: Position ──────────────────────────────────────────────────────
+    posTxt = strategy.position_size > 0 ? "📈 LONG" :
+             strategy.position_size < 0 ? "📉 SHORT" : "⭕ FLAT"
+    posClr = strategy.position_size > 0 ? color.green :
+             strategy.position_size < 0 ? color.red   : color.gray
+    table.cell(dash, 0, 27, "POSITION",    bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 27, posTxt,        bgcolor=posClr,      text_color=color.white)
+
+    // ── Row 28: Open P&L ──────────────────────────────────────────────────────
+    pnlTxt = strategy.position_size != 0 ? str.tostring(strategy.openprofit, "+0.00") : "—"
+    pnlClr = strategy.openprofit > 0 ? color.green :
+             strategy.openprofit < 0 ? color.red   : color.gray
+    table.cell(dash, 0, 28, "OPEN P&L",    bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 28, pnlTxt,        bgcolor=pnlClr,      text_color=color.white)
+
+    // ── Row 29: Bars in Trade ─────────────────────────────────────────────────
+    table.cell(dash, 0, 29, "BARS IN TRADE", bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 29, strategy.position_size != 0 ? str.tostring(barsInTrade) + " / " + str.tostring(maxHoldBars) : "—",
+               bgcolor=color.gray, text_color=color.white)
+
+    // ── Row 30: Price vs NAMA ─────────────────────────────────────────────────
+    table.cell(dash, 0, 30, "PRICE vs NAMA", bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 30, priceAboveNama ? "🟢 ABOVE" : "🔴 BELOW",
+               bgcolor=priceAboveNama ? color.green : color.red, text_color=color.white)
+
+    // ── Row 31: EMA Direction ─────────────────────────────────────────────────
+    table.cell(dash, 0, 31, "EMA DIR",     bgcolor=color.black, text_color=tC)
+    table.cell(dash, 1, 31, emaRising ? "📈 RISING" : emaFalling ? "📉 FALLING" : "—",
+               bgcolor=emaRising ? color.green : emaFalling ? color.red : color.gray,
+               text_color=color.white)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 13 – ALERTS
+// ─────────────────────────────────────────────────────────────────────────────
+alertcondition(callEntry,             "CALL Entry",           "Hybrid CALL – NAMA Bull Flip + High Confluence")
+alertcondition(putEntry,              "PUT Entry",            "Hybrid PUT  – NAMA Bear Flip + High Confluence")
+alertcondition(strategy.position_size > 0 and (hardStopCall or timeExit or stFlipExitCall),
+               "Exit CALL",           "CALL position closed")
+alertcondition(strategy.position_size < 0 and (hardStopPut or timeExit or stFlipExitPut),
+               "Exit PUT",            "PUT position closed")
+alertcondition(namaBullFlip,          "NAMA Bull Flip",       "NAMA regime flipped bullish")
+alertcondition(namaBearFlip,          "NAMA Bear Flip",       "NAMA regime flipped bearish")
+alertcondition(adv_bullTrendStart,    "Bull Regime Start",    "Advanced regime entered BULL TREND")
+alertcondition(adv_bearTrendStart,    "Bear Regime Start",    "Advanced regime entered BEAR TREND")
+alertcondition(supertrendBuySignal,   "SuperTrend Buy",       "SuperTrend flipped bullish")
+alertcondition(supertrendSellSignal,  "SuperTrend Sell",      "SuperTrend flipped bearish")
