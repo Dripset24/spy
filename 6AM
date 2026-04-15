@@ -59,6 +59,13 @@ addNeutralBand=input.float(50.0,"ADD/VOLD Neutral Band")
 trinNeutralBand=input.float(0.05,"TRIN Neutral Band")
 maxHoldBars=input.int(50,"Max Hold Bars",minval=1)
 
+namaGR="NAMA Settings"
+namaLen=input.int(20,"NAMA Length",minval=1,group=namaGR)
+namaSrc=input.source(hlcc4,"NAMA Source",group=namaGR)
+showNamaEma=input.bool(true,"Show NAMA EMA Comparison",group=namaGR)
+showNamaAtrChannel=input.bool(false,"Show NAMA ATR Channel",group=namaGR)
+namaAtrMult=input.float(5.0,"NAMA ATR Multiplier",step=0.1,minval=0,group=namaGR)
+
 stGR="Adaptive SuperTrend ML"
 atr_len=input.int(10,"ATR Length",group=stGR)
 fact=input.float(3,"SuperTrend Factor",group=stGR)
@@ -134,6 +141,13 @@ vhPL=input.string("Top","Histogram Placement",options=["Top","Bottom"],group=vhG
 vhLP=vhPL=="Top"
 vhHT=11-input.int(8,"Histogram Height",minval=1,maxval=10,group=vhGR,display=display.none)
 vhVO=input.int(1,"Histogram Vertical Offset",minval=0,maxval=20,group=vhGR,display=display.none)/20
+
+nama(src,len)=>
+    goldenRatio=1.618
+    alpha=goldenRatio/100
+    ma=ta.sma(src,len)
+    ma:=na(ma[1])?ma:alpha*src+(1-alpha)*ma[1]
+    ma
 
 dmiCalc(len)=>
     upMove=high-high[1]
@@ -321,6 +335,11 @@ dpoBullStrong=dpo>0
 dpoBearStrong=dpo<0
 sma50=ta.sma(close,smaLen)
 rsiVal=ta.rsi(close,rsiLen)
+namaVal=nama(namaSrc,namaLen)
+namaEma=ta.ema(namaSrc,namaLen)
+namaAtrRange=nama(ta.tr(true),namaLen)*namaAtrMult
+namaTop=namaVal+namaAtrRange
+namaBot=namaVal-namaAtrRange
 
 newSession=ta.change(time("D"))!=0
 tp=hlc3
@@ -1058,6 +1077,11 @@ plot(showBands?vwapP1:na,"VWAP+1",color=color.new(color.blue,0))
 plot(showBands?vwapP2:na,"VWAP+2",color=color.new(color.blue,35))
 plot(showBands?vwapM1:na,"VWAP-1",color=color.new(color.orange,0))
 plot(showBands?vwapM2:na,"VWAP-2",color=color.new(color.orange,35))
+pNamaTop=plot(showNamaAtrChannel?namaTop:na,"NAMA Top Channel",color=color.new(color.blue,50),linewidth=1)
+pNamaBot=plot(showNamaAtrChannel?namaBot:na,"NAMA Bot Channel",color=color.new(color.blue,50),linewidth=1)
+fill(pNamaTop,pNamaBot,color=color.new(color.blue,95),title="NAMA ATR Channel")
+plot(namaVal,"NAMA",color=color.new(color.green,0),linewidth=2)
+plot(showNamaEma?namaEma:na,"NAMA EMA",color=color.new(color.blue,0),linewidth=1)
 plot(sma50,"SMA50",color=color.white,linewidth=2)
 plot(showPremarketLevels and inRegular?pmHigh:na,"Premarket High",color=color.fuchsia,linewidth=2,style=plot.style_linebr)
 plot(showPremarketLevels and inRegular?pmLow:na,"Premarket Low",color=color.aqua,linewidth=2,style=plot.style_linebr)
