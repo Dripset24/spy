@@ -1,0 +1,1122 @@
+//@version=6
+strategy("MACD+VWMACD+DPO+TTM+SMA50+VWAP+MF+DMIx3+VFIx3+ATRx3+PSARx3d+ADD+TRIN+VOLD+ST-Promoted Regime+VP",overlay=true,max_labels_count=500,pyramiding=0,process_orders_on_close=true,max_boxes_count=500,max_lines_count=500,max_bars_back=5000)
+
+fastLen=input.int(7,"MACD Fast")
+slowLen=input.int(20,"MACD Slow")
+sigLen=input.int(9,"MACD Signal")
+dpoLen=input.int(21,"DPO Length")
+smaLen=input.int(50,"SMA Length")
+ttmBbLen=input.int(20,"TTM BB Length")
+ttmBbMult=input.float(2.0,"TTM BB Mult")
+ttmKcLen=input.int(20,"TTM KC Length")
+ttmKcMult=input.float(1.5,"TTM KC Mult")
+ttmMomLen=input.int(20,"TTM Momentum Length")
+reactionLookback=input.int(6,"Reaction Lookback")
+showBands=input.bool(true,"Show VWAP Bands")
+showSignals=input.bool(false,"Show Raw CALL/PUT Labels")
+showModeLabels=input.bool(true,"Show CONT/REV Mode")
+showRegimeBg=input.bool(true,"Show Regime Background")
+showRegimeBars=input.bool(false,"Color Bars By Regime")
+showRegimeLabel=input.bool(true,"Show Regime Label")
+showPriceCloud=input.bool(true,"Show Price Cloud")
+showDashboard=input.bool(true,"Show Dashboard")
+showPremarketLevels=input.bool(true,"Show Premarket High/Low")
+premarketSession=input.session("0400-0930","Premarket Session")
+regularSessionStr=input.session("0930-1600","Regular Session")
+useDpoZeroBias=input.bool(true,"Use DPO Zero Bias")
+requireTtmAgreement=input.bool(true,"Require TTM Agreement")
+useMfFilter=input.bool(true,"Use Market Forecast Proxy Filter")
+mfBullThresh=input.float(55.0,"MF Bull Threshold")
+mfBearThresh=input.float(45.0,"MF Bear Threshold")
+rsiLen=input.int(8,"RSI Length")
+rsiBullLevel=input.float(52.0,"RSI Bull Level")
+rsiBearLevel=input.float(35.0,"RSI Bear Level")
+dmiFastLen=input.int(8,"DMI Fast Length")
+dmiAvgLen=input.int(14,"DMI Avg Length")
+dmiSlowLen=input.int(21,"DMI Slow Length")
+adxThresh=input.float(20.0,"ADX Trend Threshold")
+vfiFastLen=input.int(13,"VFI Fast Length")
+vfiAvgLen=input.int(21,"VFI Avg Length")
+vfiSlowLen=input.int(30,"VFI Slow Length")
+vfiCoef=input.float(0.2,"VFI Coef")
+vfiVolCap=input.float(2.5,"VFI Vol Cap")
+atrFastLen=input.int(7,"ATR Fast Length")
+atrAvgLen=input.int(14,"ATR Avg Length")
+atrSlowLen=input.int(21,"ATR Slow Length")
+atrMaLen=input.int(30,"ATR MA Length")
+atrTrendMult=input.float(1.03,"ATR Trend Mult")
+psarFastStep=input.float(0.01,"PSAR Fast Step")
+psarFastMax=input.float(0.10,"PSAR Fast Max")
+psarAvgStep=input.float(0.02,"PSAR Avg Step")
+psarAvgMax=input.float(0.20,"PSAR Avg Max")
+psarSlowStep=input.float(0.03,"PSAR Slow Step")
+psarSlowMax=input.float(0.30,"PSAR Slow Max")
+addSymbol=input.string("USI:ADD","ADD Symbol")
+trinSymbol=input.string("USI:TRIN.US","TRIN Symbol")
+voldSymbol=input.string("USI:VOLD","VOLD Symbol")
+internalsEmaLen=input.int(8,"Internals EMA Length")
+addNeutralBand=input.float(50.0,"ADD/VOLD Neutral Band")
+trinNeutralBand=input.float(0.05,"TRIN Neutral Band")
+maxHoldBars=input.int(50,"Max Hold Bars",minval=1)
+
+stGR="Adaptive SuperTrend ML"
+atr_len=input.int(10,"ATR Length",group=stGR)
+fact=input.float(3,"SuperTrend Factor",group=stGR)
+training_data_period=input.int(100,"Training Data Length",group=stGR)
+highvol=input.float(0.75,"Initial High Volatility Percentile",maxval=1,group=stGR)
+midvol=input.float(0.5,"Initial Medium Volatility Percentile",maxval=1,group=stGR)
+lowvol=input.float(0.25,"Initial Low Volatility Percentile",maxval=1,group=stGR)
+t1=input.int(70,"Transparency 1",maxval=100,minval=0,group=stGR)
+t2=input.int(95,"Transparency 2",maxval=100,minval=0,group=stGR)
+green=input.color(#00ffbb,"Bullish Color",group=stGR)
+red=input.color(#ff1100,"Bearish Color",group=stGR)
+
+regimeGR="Regime Settings"
+supertrendUseAsTrendBoost=input.bool(true,"SuperTrend as Trend Booster",group=regimeGR)
+useVPFilter=input.bool(true,"Use VP Filter for Regime",group=regimeGR)
+vpFilterThresh=input.float(0.3,"VP High-Volume Threshold (0-1)",minval=0,maxval=1,group=regimeGR)
+
+vpGR="Volume Profile Settings"
+vpSH=input.bool(true,"Enable Volume Profile",group=vpGR)
+vpUC=input.color(color.new(#5d606b,50),"Up Volume Color",inline="VP",group=vpGR)
+vpDC=input.color(color.new(#d1d4dc,50),"Down Volume Color",inline="VP",group=vpGR)
+vaUC=input.color(color.new(#2962ff,30),"Value Area Up Color",inline="VA",group=vpGR)
+vaDC=input.color(color.new(#fbc02d,30),"Value Area Down Color",inline="VA",group=vpGR)
+spSH=input.bool(true,"Enable Sentiment Profile",group=vpGR)
+spUC=input.color(color.new(#26a69a,30),"Bullish Sentiment Color",inline="BB",group=vpGR)
+spDC=input.color(color.new(#ef5350,30),"Bearish Sentiment Color",inline="BB",group=vpGR)
+sdSH=input.bool(true,"Enable Supply Demand Zones",group=vpGR)
+sdTH=input.int(15,"Supply Demand Threshold Percent",minval=0,maxval=41,group=vpGR,display=display.none)/100
+sdSC=input.color(color.new(#ec1313,80),"Supply Zone Color",inline="SD",group=vpGR)
+sdDC=input.color(color.new(#0094FF,80),"Demand Zone Color",inline="SD",group=vpGR)
+vgSH=input.bool(true,"Enable Volume Profile Gaps",inline="vnT",group=vpGR)
+vgC=input.color(color.new(#ff9800,80),"Gap Highlight Color",inline="vnT",group=vpGR)
+vgNoN=input.int(7,"Gap Node Detection",minval=0,maxval=100,display=display.none,group=vpGR)/100
+pcSH=input.string("Developing POC","Point of Control Mode",options=["None","Developing POC","Last Line"],inline="POC",group=vpGR,display=display.none)
+pocC=input.color(#f44336,"POC Color",inline="POC",group=vpGR)
+pocW=input.int(2,"POC Width",minval=1,inline="POC",group=vpGR,display=display.none)
+vpVA=input.float(68,"Value Area Percent",minval=0,maxval=100,group=vpGR,display=display.none)/100
+vahS=input.bool(true,"Show Value Area High",inline="VAH",group=vpGR)
+vahC=input.color(#2962ff,"VAH Color",inline="VAH",group=vpGR)
+vahW=input.int(1,"VAH Width",minval=1,inline="VAH",group=vpGR,display=display.none)
+vlSH=input.bool(true,"Show Value Area Low",inline="VAL",group=vpGR)
+valC=input.color(#2962ff,"VAL Color",inline="VAL",group=vpGR)
+valW=input.int(1,"VAL Width",minval=1,inline="VAL",group=vpGR,display=display.none)
+vpPT=input.string("Bar Polarity","Profile Polarity Method",options=["Bar Polarity","Bar Buying Selling Pressure"],display=display.none,group=vpGR)
+vsPT=vpPT=="Bar Polarity"
+vpLR=input.string("Fixed Range","Profile Lookback Range",options=["Fixed Range","Visible Range"],display=display.none,group=vpGR)
+vpRL=vpLR=="Visible Range"
+vpLN=input.int(360,"Fixed Range Length",minval=10,maxval=5000,step=10,display=display.none,group=vpGR)
+vpLN:=last_bar_index<vpLN?last_bar_index:vpLN-1
+vpST=input.bool(true,"Show Profile Stats Table",inline="STT",group=vpGR)
+ppLS=input.string("Small","Stats Table Size",options=["Tiny","Small","Normal"],inline="STT",group=vpGR,display=display.none)
+lcDB=input.string("Top Right","Stats Table Position",options=["Top Right","Middle Right","Bottom Left"],inline="STT",group=vpGR,display=display.none)
+vpLV=input.bool(true,"Show Profile Price Labels",inline="BBe",group=vpGR)
+rpLS=input.string("Small","Label Size",options=["Tiny","Small","Normal"],inline="BBe",group=vpGR,display=display.none)
+vpPL=input.string("Right","Profile Placement",options=["Right","Left"],group=vpGR,display=display.none)
+vpRT=vpPL=="Right"
+vpNR=input.int(100,"Profile Number of Rows",minval=10,maxval=150,step=10,group=vpGR,display=display.none)
+vpWD=input.float(31,"Profile Width Percent",minval=0,maxval=250,group=vpGR,display=display.none)/100
+vpHO=input.int(13,"Profile Horizontal Offset",maxval=50,group=vpGR,display=display.none)
+vaBG=input.bool(false,"Show Value Area Background",inline="vBG",group=vpGR)
+vBGC=input.color(color.new(#2962ff,89),"VA BG Color",inline="vBG",group=vpGR)
+vpBG=input.bool(false,"Show Profile Range Background",inline="pBG",group=vpGR)
+bgC=input.color(color.new(#2962ff,95),"Profile BG Color",inline="pBG",group=vpGR)
+
+vhGR="Volume Histogram Settings"
+vhSH=input.bool(true,"Enable Volume Histogram",group=vhGR)
+vmaS=input.bool(true,"Show Volume MA",inline="vol2",group=vhGR)
+vmaL=input.int(21,"Volume MA Length",minval=1,inline="vol2",group=vhGR,display=display.none)
+vhUC=input.color(color.new(#26a69a,30),"Volume Growing Color",inline="vol1",group=vhGR)
+vhDC=input.color(color.new(#ef5350,30),"Volume Falling Color",inline="vol1",group=vhGR)
+vmaC=input.color(color.new(#2962ff,0),"Volume MA Color",inline="vol1",group=vhGR)
+vhPL=input.string("Top","Histogram Placement",options=["Top","Bottom"],group=vhGR,display=display.none)
+vhLP=vhPL=="Top"
+vhHT=11-input.int(8,"Histogram Height",minval=1,maxval=10,group=vhGR,display=display.none)
+vhVO=input.int(1,"Histogram Vertical Offset",minval=0,maxval=20,group=vhGR,display=display.none)/20
+
+dmiCalc(len)=>
+    upMove=high-high[1]
+    downMove=low[1]-low
+    plusDM=(upMove>downMove and upMove>0)?upMove:0.0
+    minusDM=(downMove>upMove and downMove>0)?downMove:0.0
+    trRma=ta.rma(ta.tr(true),len)
+    plus=100*ta.rma(plusDM,len)/math.max(trRma,1e-10)
+    minus=100*ta.rma(minusDM,len)/math.max(trRma,1e-10)
+    dx=100*math.abs(plus-minus)/math.max(plus+minus,1e-10)
+    adx=ta.rma(dx,len)
+    [plus,minus,adx]
+
+vfiCalc(len,coef,volCap)=>
+    typical=hlc3
+    inter=math.log(typical)-math.log(typical[1])
+    cutoff=coef*ta.stdev(inter,len)*close
+    volAvg=ta.sma(volume,len)
+    maxVol=volAvg*volCap
+    cappedVol=math.min(volume,maxVol)
+    mf=typical-typical[1]
+    dir=mf>cutoff?1.0:mf<-cutoff?-1.0:0.0
+    raw=dir*cappedVol
+    ta.sma((ta.sma(raw,len)*len)/math.max(volAvg,1e-10),3)
+
+scoreText(val)=>val>=13?"ELITE":val>=10?"STRONG":val>=7?"GOOD":val>=4?"WEAK":"POOR"
+
+tripleAlignText(fBull,aBull,sBull,fBear,aBear,sBear)=>
+    string result="MIXED"
+    if fBull and aBull and sBull
+        result:="BULL F+A+S"
+    else if fBear and aBear and sBear
+        result:="BEAR F+A+S"
+    else if fBull and aBull
+        result:="BULL F+A"
+    else if aBull and sBull
+        result:="BULL A+S"
+    else if fBull and sBull
+        result:="BULL F+S"
+    else if fBear and aBear
+        result:="BEAR F+A"
+    else if aBear and sBear
+        result:="BEAR A+S"
+    else if fBear and sBear
+        result:="BEAR F+S"
+    else if fBull
+        result:="BULL FAST"
+    else if aBull
+        result:="BULL AVG"
+    else if sBull
+        result:="BULL SLOW"
+    else if fBear
+        result:="BEAR FAST"
+    else if aBear
+        result:="BEAR AVG"
+    else if sBear
+        result:="BEAR SLOW"
+    result
+
+type bar
+    float o=open
+    float h=high
+    float l=low
+    float c=close
+    float v=volume
+    int i=bar_index
+
+type barData
+    array<float> bh
+    array<float> bl
+    array<float> bv
+    array<bool> bp
+    array<int> bn
+
+type volData
+    array<float> vt
+    array<float> vb
+    array<float> vd
+
+type tVP
+    array<box> vp
+    array<chart.point> pPC
+    polyline dPC
+    int pcL
+    int laP
+    int lbP
+    int sI
+
+type tVH
+    array<line> vh
+    array<chart.point> pMA
+    polyline vMA
+
+var barData bD=barData.new(array.new<float>(na),array.new<float>(na),array.new<float>(na),array.new<bool>(na),array.new<int>(na))
+volData vD=volData.new(array.new<float>(vpNR,0.),array.new<float>(vpNR,0.),array.new<float>(vpNR,0.))
+var tVP VP=tVP.new(array.new<box>(na),array.new<chart.point>(na),polyline.new(na),na,na,na,na)
+var tVH VH=tVH.new(array.new<line>(na),array.new<chart.point>(na),polyline.new(na))
+var float vpHighVolumeRatio=0.0
+
+array<bar> ltfBD=array.new<bar>(1,bar.new())
+var float pHST=na
+var float pLST=na
+var string ltf=na
+
+pine_supertrend(factor,atr)=>
+    src=hl2
+    upperBand=src+factor*atr
+    lowerBand=src-factor*atr
+    prevLowerBand=nz(lowerBand[1])
+    prevUpperBand=nz(upperBand[1])
+    lowerBand:=lowerBand>prevLowerBand or close[1]<prevLowerBand?lowerBand:prevLowerBand
+    upperBand:=upperBand<prevUpperBand or close[1]>prevUpperBand?upperBand:prevUpperBand
+    int _direction=na
+    float superTrend=na
+    prevSuperTrend=superTrend[1]
+    if na(atr[1])
+        _direction:=1
+    else if prevSuperTrend==prevUpperBand
+        _direction:=close>upperBand?-1:1
+    else
+        _direction:=close<lowerBand?1:-1
+    superTrend:=_direction==-1?lowerBand:upperBand
+    [superTrend,_direction]
+
+f_drawLineX(_x1,_y1,_x2,_y2,_xloc,_extend,_color,_style,_width)=>
+    var id=line.new(_x1,_y1,_x2,_y2,_xloc,_extend,_color,_style,_width)
+    line.set_xy1(id,_x1,_y1)
+    line.set_xy2(id,_x2,_y2)
+    line.set_color(id,_color)
+
+f_drawLabelX(_x,_y,_text,_color,_style,_textcolor,_size,_tooltip)=>
+    var lb=label.new(_x,_y,_text,xloc.bar_index,yloc.price,_color,_style,_textcolor,_size,text.align_left,_tooltip)
+    lb.set_xy(_x,_y)
+    lb.set_text(_text)
+    lb.set_tooltip(_tooltip)
+    lb.set_textcolor(_textcolor)
+
+getData(_ltf)=>
+    request.security_lower_tf(syminfo.tickerid,_ltf,bar.new(),ignore_invalid_timeframe=true)
+
+var string[] secTF=array.from("1S","5S","15S","30S")
+var string[] minTF=array.from("1","3","5","15","30","60","120","240","1D")
+
+f_gTF(_lookback)=>
+    int tfInSec=timeframe.in_seconds(timeframe.period)
+    int totalSec=tfInSec*_lookback
+    int mInSec=60
+    if timeframe.isseconds
+        string result="1S"
+        for tfStr in secTF
+            int ltfSec=timeframe.in_seconds(tfStr)
+            if totalSec/ltfSec<5000
+                result:=tfStr
+                break
+        result
+    else
+        int ltfSec=1*mInSec
+        result=timeframe.period
+        for tfStr in minTF
+            ltfSec:=timeframe.in_seconds(tfStr)
+            if totalSec/ltfSec<5000
+                result:=tfStr
+                break
+        result
+
+f_gTS(_t)=>
+    switch _t
+        "Tiny"=>size.tiny
+        "Small"=>size.small
+        "Normal"=>size.normal
+        =>size.auto
+
+macdLine=ta.ema(close,fastLen)-ta.ema(close,slowLen)
+signalLine=ta.ema(macdLine,sigLen)
+macdHist=macdLine-signalLine
+vwSrc=close*volume
+vwMacdLine=ta.ema(vwSrc,fastLen)-ta.ema(vwSrc,slowLen)
+vwSignalLine=ta.ema(vwMacdLine,sigLen)
+vwMacdHist=vwMacdLine-vwSignalLine
+dpoShift=math.floor(dpoLen/2)+1
+dpo=close[dpoShift]-ta.sma(close,dpoLen)
+dpoUp=dpo>dpo[1]
+dpoDown=dpo<dpo[1]
+dpoBullStrong=dpo>0
+dpoBearStrong=dpo<0
+sma50=ta.sma(close,smaLen)
+rsiVal=ta.rsi(close,rsiLen)
+
+newSession=ta.change(time("D"))!=0
+tp=hlc3
+var float cumPV=na
+var float cumV=na
+var float cumP2V=na
+cumPV:=newSession?tp*volume:nz(cumPV)+tp*volume
+cumV:=newSession?volume:nz(cumV)+volume
+cumP2V:=newSession?volume*tp*tp:nz(cumP2V)+volume*tp*tp
+vwap=cumPV/cumV
+variance=math.max(cumP2V/cumV-vwap*vwap,0.0)
+vwapStdev=math.sqrt(variance)
+vwapP1=vwap+vwapStdev
+vwapP2=vwap+2.0*vwapStdev
+vwapM1=vwap-vwapStdev
+vwapM2=vwap-2.0*vwapStdev
+
+inPremarket=not na(time(timeframe.period,premarketSession))
+inRegular=not na(time(timeframe.period,regularSessionStr))
+var float pmHigh=na
+var float pmLow=na
+if newSession
+    pmHigh:=na
+    pmLow:=na
+if inPremarket
+    pmHigh:=na(pmHigh)?high:math.max(pmHigh,high)
+    pmLow:=na(pmLow)?low:math.min(pmLow,low)
+
+basis=ta.sma(close,ttmBbLen)
+dev=ta.stdev(close,ttmBbLen)
+bbUpper=basis+ttmBbMult*dev
+bbLower=basis-ttmBbMult*dev
+tr=ta.tr(true)
+kcRange=ta.sma(tr,ttmKcLen)
+kcMid=ta.sma(close,ttmKcLen)
+kcUpper=kcMid+ttmKcMult*kcRange
+kcLower=kcMid-ttmKcMult*kcRange
+ttmBase=((ta.highest(high,ttmMomLen)+ta.lowest(low,ttmMomLen))/2+ta.sma(close,ttmMomLen))/2
+ttmRaw=close-ttmBase
+ttmHist=ta.linreg(ttmRaw,ttmMomLen,0)
+ttmBull=ttmHist>0 and ttmHist>ttmHist[1]
+ttmBear=ttmHist<0 and ttmHist<ttmHist[1]
+ttmCurlUp=ttmHist>ttmHist[1]
+ttmCurlDown=ttmHist<ttmHist[1]
+
+mfMomentum=ta.sma(ta.stoch(close,high,low,8),2)
+mfNearTerm=ta.sma(ta.stoch(close,high,low,14),3)
+mfIntermediate=ta.sma(ta.stoch(close,high,low,30),5)
+mfMomentumUp=mfMomentum>mfMomentum[1]
+mfMomentumDown=mfMomentum<mfMomentum[1]
+mfNearUp=mfNearTerm>mfNearTerm[1]
+mfNearDown=mfNearTerm<mfNearTerm[1]
+mfInterBull=mfIntermediate>mfBullThresh
+mfInterBear=mfIntermediate<mfBearThresh
+mfBull=mfMomentum>mfBullThresh and mfNearTerm>mfBullThresh and mfInterBull and mfMomentumUp and mfNearUp
+mfBear=mfMomentum<mfBearThresh and mfNearTerm<mfBearThresh and mfInterBear and mfMomentumDown and mfNearDown
+mfNeutral=not mfBull and not mfBear
+rsiBull=rsiVal>rsiBullLevel and rsiVal>=rsiVal[1]
+rsiBear=rsiVal<rsiBearLevel and rsiVal<=rsiVal[1]
+mfBullPressure=mfIntermediate>60 or (mfIntermediate>50 and mfNearTerm>mfNearTerm[1])
+mfBearPressure=mfIntermediate<40 or (mfIntermediate<50 and mfNearTerm<mfNearTerm[1])
+
+addClose=request.security(addSymbol,timeframe.period,close,ignore_invalid_symbol=true)
+trinClose=request.security(trinSymbol,timeframe.period,close,ignore_invalid_symbol=true)
+voldClose=request.security(voldSymbol,timeframe.period,close,ignore_invalid_symbol=true)
+addEma=ta.ema(addClose,internalsEmaLen)
+trinEma=ta.ema(trinClose,internalsEmaLen)
+voldEma=ta.ema(voldClose,internalsEmaLen)
+addSlope=addEma-addEma[1]
+trinSlope=trinEma-trinEma[1]
+voldSlope=voldEma-voldEma[1]
+addBullCont=addEma>0 and addSlope>0
+addBearCont=addEma<0 and addSlope<0
+addBullRev=addEma<0 and addSlope>0
+addBearRev=addEma>0 and addSlope<0
+addNeutral=math.abs(addEma)<addNeutralBand
+trinBullCont=trinEma<1 and trinSlope<0
+trinBearCont=trinEma>1 and trinSlope>0
+trinBullRev=trinEma>1 and trinSlope<0
+trinBearRev=trinEma<1 and trinSlope>0
+trinNeutral=math.abs(trinEma-1)<trinNeutralBand
+voldBullCont=voldEma>0 and voldSlope>0
+voldBearCont=voldEma<0 and voldSlope<0
+voldBullRev=voldEma<0 and voldSlope>0
+voldBearRev=voldEma>0 and voldSlope<0
+voldNeutral=math.abs(voldEma)<addNeutralBand
+bullContCount=(addBullCont?1:0)+(voldBullCont?1:0)+(trinBullCont?1:0)
+bearContCount=(addBearCont?1:0)+(voldBearCont?1:0)+(trinBearCont?1:0)
+bullRevCount=(addBullRev?1:0)+(voldBullRev?1:0)+(trinBullRev?1:0)
+bearRevCount=(addBearRev?1:0)+(voldBearRev?1:0)+(trinBearRev?1:0)
+internalsBullTrend=bullContCount>=2
+internalsBearTrend=bearContCount>=2
+internalsCallRev=bullRevCount>=2
+internalsPutRev=bearRevCount>=2
+
+addDpoShift=math.floor(dpoLen/2)+1
+addDpo=addClose[addDpoShift]-ta.sma(addClose,dpoLen)
+addDpoBull=addDpo>0
+addDpoBear=addDpo<0
+addDpoRising=addDpo>addDpo[1]
+addDpoFalling=addDpo<addDpo[1]
+addDpoBullConfirm=addDpo>0 or (addDpo<0 and addDpoRising)
+addDpoBearConfirm=addDpo<0 or (addDpo>0 and addDpoFalling)
+addDpoText=addDpoBull?(addDpoRising?"ABOVE+RISING":"ABOVE+FALLING"):(addDpoRising?"BELOW+RISING":"BELOW+FALLING")
+
+[diPlusFast,diMinusFast,adxFast]=dmiCalc(dmiFastLen)
+[diPlusAvg,diMinusAvg,adxAvg]=dmiCalc(dmiAvgLen)
+[diPlusSlow,diMinusSlow,adxSlow]=dmiCalc(dmiSlowLen)
+fastBullDmi=diPlusFast>diMinusFast
+fastBearDmi=diMinusFast>diPlusFast
+avgBullDmi=diPlusAvg>diMinusAvg
+avgBearDmi=diMinusAvg>diPlusAvg
+slowBullDmi=diPlusSlow>diMinusSlow
+slowBearDmi=diMinusSlow>diPlusSlow
+bullDmiCount=(fastBullDmi?1:0)+(avgBullDmi?1:0)+(slowBullDmi?1:0)
+bearDmiCount=(fastBearDmi?1:0)+(avgBearDmi?1:0)+(slowBearDmi?1:0)
+dmiBullAgree=bullDmiCount>=2
+dmiBearAgree=bearDmiCount>=2
+dmiBullStrong=bullDmiCount==3
+dmiBearStrong=bearDmiCount==3
+adxTrendCount=((adxFast>adxThresh)?1:0)+((adxAvg>adxThresh)?1:0)+((adxSlow>adxThresh)?1:0)
+adxTrend=adxTrendCount>=2
+adxStrong=adxTrendCount==3
+adxWeak=adxTrendCount<=1
+
+vfiFast=vfiCalc(vfiFastLen,vfiCoef,vfiVolCap)
+vfiAvg=vfiCalc(vfiAvgLen,vfiCoef,vfiVolCap)
+vfiSlow=vfiCalc(vfiSlowLen,vfiCoef,vfiVolCap)
+vfiFastBull=vfiFast>vfiFast[1]
+vfiFastBear=vfiFast<vfiFast[1]
+vfiAvgBull=vfiAvg>vfiAvg[1] or vfiAvg>0
+vfiAvgBear=vfiAvg<vfiAvg[1] or vfiAvg<0
+vfiSlowBull=vfiSlow>vfiSlow[1] or vfiSlow>0
+vfiSlowBear=vfiSlow<vfiSlow[1] or vfiSlow<0
+vfiBullCount=(vfiFastBull?1:0)+(vfiAvgBull?1:0)+(vfiSlowBull?1:0)
+vfiBearCount=(vfiFastBear?1:0)+(vfiAvgBear?1:0)+(vfiSlowBear?1:0)
+vfiBullFast=vfiFastBull
+vfiBearFast=vfiFastBear
+vfiBullAgree=vfiBullCount>=2
+vfiBearAgree=vfiBearCount>=2
+vfiBullStrong=vfiBullCount==3
+vfiBearStrong=vfiBearCount==3
+
+atrFast=ta.atr(atrFastLen)
+atrAvg=ta.atr(atrAvgLen)
+atrSlow=ta.atr(atrSlowLen)
+atrFastMa=ta.sma(atrFast,atrMaLen)
+atrAvgMa=ta.sma(atrAvg,atrMaLen)
+atrSlowMa=ta.sma(atrSlow,atrMaLen)
+atrFastStrong=atrFast>atrFastMa*atrTrendMult
+atrAvgStrong=atrAvg>atrAvgMa*atrTrendMult
+atrSlowStrong=atrSlow>atrSlowMa*atrTrendMult
+atrCount=(atrFastStrong?1:0)+(atrAvgStrong?1:0)+(atrSlowStrong?1:0)
+atrStrong=atrCount>=2
+atrVeryStrong=atrCount==3
+atrWeak=atrCount<=1
+
+psarFast=ta.sar(psarFastStep,psarFastStep,psarFastMax)
+psarAvg=ta.sar(psarAvgStep,psarAvgStep,psarAvgMax)
+psarSlow=ta.sar(psarSlowStep,psarSlowStep,psarSlowMax)
+psarFastBull=close>psarFast
+psarFastBear=close<psarFast
+psarAvgBull=close>psarAvg
+psarAvgBear=close<psarAvg
+psarSlowBull=close>psarSlow
+psarSlowBear=close<psarSlow
+psarBullCount=(psarFastBull?1:0)+(psarAvgBull?1:0)+(psarSlowBull?1:0)
+psarBearCount=(psarFastBear?1:0)+(psarAvgBear?1:0)+(psarSlowBear?1:0)
+psarBullAgree=psarBullCount>=2
+psarBearAgree=psarBearCount>=2
+psarBullStrong=psarBullCount==3
+psarBearStrong=psarBearCount==3
+psarAlignText=tripleAlignText(psarFastBull,psarAvgBull,psarSlowBull,psarFastBear,psarAvgBear,psarSlowBear)
+
+volatility=ta.atr(atr_len)
+upper=ta.highest(volatility,training_data_period)
+lower=ta.lowest(volatility,training_data_period)
+high_volatility=lower+(upper-lower)*highvol
+medium_volatility=lower+(upper-lower)*midvol
+low_volatility=lower+(upper-lower)*lowvol
+iterations=0
+size_a=0
+size_b=0
+size_c=0
+hv=array.new_float()
+mv=array.new_float()
+lv=array.new_float()
+amean=array.new_float(1,high_volatility)
+bmean=array.new_float(1,medium_volatility)
+cmean=array.new_float(1,low_volatility)
+if nz(volatility)>0 and bar_index>=training_data_period-1
+    while ((amean.size()==1?true:(amean.first()!=amean.get(1))) or (bmean.size()==1?true:(bmean.first()!=bmean.get(1))) or (cmean.size()==1?true:(cmean.first()!=cmean.get(1))))
+        hv.clear()
+        mv.clear()
+        lv.clear()
+        for i=training_data_period-1 to 0
+            _1=math.abs(volatility[i]-amean.first())
+            _2=math.abs(volatility[i]-bmean.first())
+            _3=math.abs(volatility[i]-cmean.first())
+            if _1<_2 and _1<_3
+                hv.unshift(volatility[i])
+            if _2<_1 and _2<_3
+                mv.unshift(volatility[i])
+            if _3<_1 and _3<_2
+                lv.unshift(volatility[i])
+        amean.unshift(hv.avg())
+        bmean.unshift(mv.avg())
+        cmean.unshift(lv.avg())
+        size_a:=hv.size()
+        size_b:=mv.size()
+        size_c:=lv.size()
+        iterations:=iterations+1
+hv_new=amean.first()
+mv_new=bmean.first()
+lv_new=cmean.first()
+vdist_a=math.abs(volatility-hv_new)
+vdist_b=math.abs(volatility-mv_new)
+vdist_c=math.abs(volatility-lv_new)
+distances=array.new_float()
+centroids=array.new_float()
+distances.push(vdist_a)
+distances.push(vdist_b)
+distances.push(vdist_c)
+centroids.push(hv_new)
+centroids.push(mv_new)
+centroids.push(lv_new)
+cluster=distances.indexof(distances.min())
+assigned_centroid=cluster==-1?na:centroids.get(cluster)
+[ST,dir]=pine_supertrend(fact,assigned_centroid)
+
+upTrend=plot(close>ST?ST:na,color=color.new(green,t1),style=plot.style_linebr)
+downTrend=plot(close<ST?ST:na,color=color.new(red,t1),style=plot.style_linebr)
+bodyMiddle=plot(barstate.isfirst?na:(open+close)/2,"Body Middle",display=display.none)
+fill(bodyMiddle,upTrend,(open+close)/2,ST,color.new(green,t2),color.new(green,t1))
+fill(bodyMiddle,downTrend,ST,(open+close)/2,color.new(red,t1),color.new(red,t2))
+
+plotshape(ta.crossunder(dir,0)?ST:na,"Bullish Trend",shape.labelup,location.absolute,green,text="▲",textcolor=chart.fg_color,size=size.small)
+plotshape(ta.crossover(dir,0)?ST:na,"Bearish Trend",shape.labeldown,location.absolute,red,text="▼",textcolor=chart.fg_color,size=size.small)
+
+label.new(bar_index,dir>0?ST+ta.atr(7):ST-ta.atr(7),text=str.tostring(4-(cluster+1)),style=label.style_none,textcolor=color.from_gradient(cluster+1,1,3,color.new(dir>0?red:green,30),color.new(dir>0?red:green,90)))
+
+supertrendBull=dir==1
+supertrendBear=dir==-1
+supertrendBuySignal=dir==1 and dir[1]==-1
+supertrendSellSignal=dir==-1 and dir[1]==1
+supertrendBullLine=supertrendBull?ST:na
+supertrendBearLine=supertrendBear?ST:na
+supertrendText=supertrendBull?(supertrendBuySignal?"BULL FLIP":"BULL"):(supertrendSellSignal?"BEAR FLIP":"BEAR")
+
+histBull=macdHist>0 and macdHist>macdHist[1]
+histBear=macdHist<0 and macdHist<macdHist[1]
+macdBull=macdLine>signalLine
+macdBear=macdLine<signalLine
+vwBull=vwMacdLine>vwSignalLine
+vwBear=vwMacdLine<vwSignalLine
+dpoBull=dpoUp and (not useDpoZeroBias or dpoBullStrong)
+dpoBear=dpoDown and (not useDpoZeroBias or dpoBearStrong)
+macdBullCount=(histBull?1:0)+(macdBull?1:0)+(vwBull?1:0)
+macdBearCount=(histBear?1:0)+(macdBear?1:0)+(vwBear?1:0)
+macdBullAgree=macdBullCount>=2
+macdBearAgree=macdBearCount>=2
+macdBullStrong=macdBullCount==3
+macdBearStrong=macdBearCount==3
+macdAlignText=tripleAlignText(histBull,macdBull,vwBull,histBear,macdBear,vwBear)
+dmiAlignText=tripleAlignText(fastBullDmi,avgBullDmi,slowBullDmi,fastBearDmi,avgBearDmi,slowBearDmi)
+vfiAlignText=tripleAlignText(vfiFastBull,vfiAvgBull,vfiSlowBull,vfiFastBear,vfiAvgBear,vfiSlowBear)
+adxAlignText=adxFast>adxThresh and adxAvg>adxThresh and adxSlow>adxThresh?"TREND F+A+S":adxFast>adxThresh and adxAvg>adxThresh?"TREND F+A":adxAvg>adxThresh and adxSlow>adxThresh?"TREND A+S":adxFast>adxThresh and adxSlow>adxThresh?"TREND F+S":adxFast>adxThresh?"TREND FAST":adxAvg>adxThresh?"TREND AVG":adxSlow>adxThresh?"TREND SLOW":"WEAK"
+atrAlignText=atrFastStrong and atrAvgStrong and atrSlowStrong?"EXPAND F+A+S":atrFastStrong and atrAvgStrong?"EXPAND F+A":atrAvgStrong and atrSlowStrong?"EXPAND A+S":atrFastStrong and atrSlowStrong?"EXPAND F+S":atrFastStrong?"EXPAND FAST":atrAvgStrong?"EXPAND AVG":atrSlowStrong?"EXPAND SLOW":"WEAK"
+
+bullStackBase=histBull and macdBull and vwBull and dpoBull
+bearStackBase=histBear and macdBear and vwBear and dpoBear
+bullStack=requireTtmAgreement?(bullStackBase and ttmBull):bullStackBase
+bearStack=requireTtmAgreement?(bearStackBase and ttmBear):bearStackBase
+bullStrengthening=macdHist>macdHist[1] and dpo>dpo[1] and ttmHist>ttmHist[1]
+bearStrengthening=macdHist<macdHist[1] and dpo<dpo[1] and ttmHist<ttmHist[1]
+bullExpanding=macdHist>macdHist[1] and macdHist[1]>macdHist[2] and ttmHist>ttmHist[1]
+bearExpanding=macdHist<macdHist[1] and macdHist[1]<macdHist[2] and ttmHist<ttmHist[1]
+
+callTrendZone=(close>vwap or ta.crossover(close,vwap)) and (close>sma50 or ta.crossover(close,sma50))
+putTrendZone=(close<vwap or ta.crossunder(close,vwap)) and (close<sma50 or ta.crossunder(close,sma50))
+callReversalTouch=(ta.lowest(low,reactionLookback)<=vwapM1) or (ta.lowest(low,reactionLookback)<=vwapM2)
+putReversalTouch=(ta.highest(high,reactionLookback)>=vwapP1) or (ta.highest(high,reactionLookback)>=vwapP2)
+callTurnUp=(close>close[1] or close>high[1]) and macdHist>macdHist[1] and dpo>dpo[1] and ttmCurlUp
+putTurnDown=(close<close[1] or close<low[1]) and macdHist<macdHist[1] and dpo<dpo[1] and ttmCurlDown
+callTowardStructure=((close<sma50 and close>close[1]) or (close<vwap and close>close[1]))
+putTowardStructure=((close>sma50 and close<close[1]) or (close>vwap and close<close[1]))
+callNotChasing=(close<vwapP1) or (close>=vwapP1 and bullStrengthening) or (close>=vwapP2 and bullExpanding)
+putNotChasing=(close>vwapM1) or (close<=vwapM1 and bearStrengthening) or (close<=vwapM2 and bearExpanding)
+bullStructureLock=close>vwap and close>sma50
+bearStructureLock=close<vwap and close<sma50
+bullMomentumSupport=histBull or macdBull or vwBull or dpoBull or ttmBull
+bearMomentumSupport=histBear or macdBear or vwBear or dpoBear or ttmBear
+
+callContinuation=callTrendZone and bullStack and callNotChasing and dmiBullAgree and (not useMfFilter or mfBull or mfNeutral) and (not vfiBearAgree) and (internalsBullTrend or addNeutral or voldNeutral or trinNeutral)
+putContinuation=putTrendZone and bearStack and putNotChasing and dmiBearAgree and (not useMfFilter or mfBear or mfNeutral) and (not vfiBullAgree) and (internalsBearTrend or addNeutral or voldNeutral or trinNeutral)
+callReversal=callReversalTouch and callTurnUp and bullStackBase and (not useDpoZeroBias or dpo>=dpo[1]) and callTowardStructure and fastBullDmi and vfiBullFast and (not useMfFilter or mfMomentumUp) and (internalsCallRev or addBullRev or voldBullRev or trinBullRev)
+putReversal=putReversalTouch and putTurnDown and bearStackBase and (not useDpoZeroBias or dpo<=dpo[1]) and putTowardStructure and fastBearDmi and vfiBearFast and (not useMfFilter or mfMomentumDown) and (internalsPutRev or addBearRev or voldBearRev or trinBearRev)
+callSetup=(callContinuation or callReversal) and not (bearStructureLock and bearMomentumSupport and psarBearAgree)
+putSetup=(putContinuation or putReversal) and not (bullStructureLock and bullMomentumSupport and psarBullAgree)
+callSignal=callSetup and not callSetup[1]
+putSignal=putSetup and not putSetup[1]
+callMode=callContinuation?"CALL-CONT":callReversal?"CALL-REV":""
+putMode=putContinuation?"PUT-CONT":putReversal?"PUT-REV":""
+
+bullScore=0
+bullScore+=histBull?1:0
+bullScore+=macdBull?1:0
+bullScore+=vwBull?1:0
+bullScore+=dpoBull?1:0
+bullScore+=(close>vwap)?1:0
+bullScore+=(close>sma50)?1:0
+bullScore+=vfiBullFast?1:0
+bullScore+=dmiBullAgree?1:0
+bullScore+=psarBullAgree?1:0
+bullScore+=ttmBull?1:0
+bullScore+=mfBull?1:0
+bullScore+=addBullCont?1:0
+bullScore+=trinBullCont?1:0
+bullScore+=voldBullCont?1:0
+bullScore+=addDpoBullConfirm?2:0
+
+bearScore=0
+bearScore+=histBear?1:0
+bearScore+=macdBear?1:0
+bearScore+=vwBear?1:0
+bearScore+=dpoBear?1:0
+bearScore+=(close<vwap)?1:0
+bearScore+=(close<sma50)?1:0
+bearScore+=vfiBearFast?1:0
+bearScore+=dmiBearAgree?1:0
+bearScore+=psarBearAgree?1:0
+bearScore+=ttmBear?1:0
+bearScore+=mfBear?1:0
+bearScore+=addBearCont?1:0
+bearScore+=trinBearCont?1:0
+bearScore+=voldBearCont?1:0
+bearScore+=addDpoBearConfirm?2:0
+
+bullTotal=bullScore+(dmiBullStrong?1:0)+(vfiBullStrong?1:0)+(psarBullStrong?1:0)+(adxStrong?1:0)+(atrVeryStrong?1:0)+(internalsBullTrend?1:0)+(rsiBull?1:0)+(mfBullPressure?1:0)
+bearTotal=bearScore+(dmiBearStrong?1:0)+(vfiBearStrong?1:0)+(psarBearStrong?1:0)+(adxStrong?1:0)+(atrVeryStrong?1:0)+(internalsBearTrend?1:0)+(rsiBear?1:0)+(mfBearPressure?1:0)
+totalScore=math.max(bullTotal,bearTotal)
+confidencePct=math.min(100,math.round(totalScore*6.0))
+
+vwapDistPct=math.abs(close-vwap)/close*100.0
+smaDistPct=math.abs(close-sma50)/close*100.0
+clearBullStructure=close>vwap and close>sma50 and vwapDistPct>0.03 and smaDistPct>0.03
+clearBearStructure=close<vwap and close<sma50 and vwapDistPct>0.03 and smaDistPct>0.03
+
+priceBullScoreEarly=0
+priceBullScoreEarly+=(macdHist>0)?1:0
+priceBullScoreEarly+=(macdLine>signalLine)?1:0
+priceBullScoreEarly+=(vwMacdLine>vwSignalLine)?1:0
+priceBullScoreEarly+=(dpo>dpo[1])?1:0
+priceBullScoreEarly+=(close>vwap)?1:0
+priceBullScoreEarly+=(close>sma50)?1:0
+priceBearScoreEarly=0
+priceBearScoreEarly+=(macdHist<0)?1:0
+priceBearScoreEarly+=(macdLine<signalLine)?1:0
+priceBearScoreEarly+=(vwMacdLine<vwSignalLine)?1:0
+priceBearScoreEarly+=(dpo<dpo[1])?1:0
+priceBearScoreEarly+=(close<vwap)?1:0
+priceBearScoreEarly+=(close<sma50)?1:0
+priceBullEarly=priceBullScoreEarly>=4 and priceBearScoreEarly<=2
+priceBearEarly=priceBearScoreEarly>=4 and priceBullScoreEarly<=2
+priceCloudBullPromote=priceBullEarly and close>vwap and close>sma50
+priceCloudBearPromote=priceBearEarly and close<vwap and close<sma50
+
+nzV=nz(volume)
+vSMA=ta.sma(nzV,vmaL)
+rpS=f_gTS(rpLS)
+ppLS:=f_gTS(ppLS)
+tPOS=lcDB=="Top Right"?position.top_right:lcDB=="Middle Right"?position.middle_right:position.bottom_left
+
+if time==chart.left_visible_bar_time
+    VP.sI:=bar_index
+if vpRL
+    vpLN:=last_bar_index-VP.sI
+if bar_index==last_bar_index-vpLN
+    VP.sI:=bar_index
+    pLST:=low
+    pHST:=high
+else if bar_index>last_bar_index-vpLN
+    pLST:=math.min(low,pLST)
+    pHST:=math.max(high,pHST)
+if barstate.isfirst or vpRL
+    ltf:=f_gTF(vpLN)
+ltfBD:=getData(ltf)
+if barstate.ishistory and bar_index>=last_bar_index-vpLN and bar_index<last_bar_index and ltfBD.size()>0
+    if ltfBD.size()>0 and not na(nz(ltfBD.get(0).v))
+        for i=0 to ltfBD.size()-1 by 1
+            bD.bh.push(ltfBD.get(i).h)
+            bD.bl.push(ltfBD.get(i).l)
+            bD.bv.push(ltfBD.get(i).v)
+            if vsPT
+                bD.bp.push(ltfBD.get(i).c>ltfBD.get(i).o)
+            else
+                bD.bp.push(ltfBD.get(i).c-ltfBD.get(i).l>ltfBD.get(i).h-ltfBD.get(i).c)
+        bD.bn.push(ltfBD.size())
+pSTP=(pHST-pLST)/vpNR
+if barstate.islast and ltfBD.size()>0
+    if VP.vp.size()>0
+        for i=VP.vp.size()-1 to 0
+            box.delete(VP.vp.shift())
+    if bD.bn.size()>vpLN
+        qt=bD.bn.shift()
+        for i=0 to qt-1 by 1
+            bD.bh.shift()
+            bD.bl.shift()
+            bD.bv.shift()
+            bD.bp.shift()
+    if not na(VP.dPC)
+        VP.pPC.clear()
+        VP.dPC.delete()
+    if ltfBD.size()>0 and not na(nz(ltfBD.get(0).v))
+        for i=0 to ltfBD.size()-1 by 1
+            bD.bh.push(ltfBD.get(i).h)
+            bD.bl.push(ltfBD.get(i).l)
+            bD.bv.push(ltfBD.get(i).v)
+            if vsPT
+                bD.bp.push(ltfBD.get(i).c>ltfBD.get(i).o)
+            else
+                bD.bp.push(ltfBD.get(i).c-ltfBD.get(i).l>ltfBD.get(i).h-ltfBD.get(i).c)
+        bD.bn.push(ltfBD.size())
+    bI=vpLN
+    bSZ=0
+    aSZ=bD.bv.size()
+    for aI=0 to aSZ-1 by 1
+        lH=bD.bh.get(aI)
+        lL=bD.bl.get(aI)
+        lV=bD.bv.get(aI)
+        lR=math.max(lH-lL,syminfo.mintick)
+        int sSI=math.max(math.floor((lL-pLST)/pSTP),0)
+        int eSI=math.min(math.floor((lH-pLST)/pSTP),vpNR-1)
+        for pLI=sSI to eSI
+            float pL=pLST+pLI*pSTP
+            vPOR=switch
+                lL>=pL and lH>pL+pSTP=>(pL+pSTP-lL)/lR
+                lH<=pL+pSTP and lL<pL=>(lH-pL)/lR
+                lL>=pL and lH<=pL+pSTP=>1
+                =>pSTP/lR
+            vD.vt.set(pLI,vD.vt.get(pLI)+lV*vPOR)
+            if bD.bp.get(aI)
+                vD.vb.set(pLI,vD.vb.get(pLI)+lV*vPOR)
+        if pcSH=="Developing POC"
+            if aI==bD.bn.get(vpLN-bI)
+                VP.pPC.push(chart.point.from_index(bar_index[bI],math.avg(high[bI],low[bI])))
+                VP.pPC.push(chart.point.from_index(bar_index[bI]+1,pLST+(vD.vt.indexof(vD.vt.max())+.5)*pSTP))
+                bSZ:=bSZ+bD.bn.get(vpLN-bI)
+                bI:=bI-1
+            else if aI==bSZ+bD.bn.get(vpLN-bI) and bSZ!=0
+                VP.pPC.push(chart.point.from_index(bar_index[bI]+1,pLST+(vD.vt.indexof(vD.vt.max())+.5)*pSTP))
+                bSZ:=bSZ+bD.bn.get(vpLN-bI)
+                bI:=bI-1
+            else if bI==0
+                VP.pPC.push(chart.point.from_index(bar_index[bI]+1,pLST+(vD.vt.indexof(vD.vt.max())+.5)*pSTP))
+                bSZ:=bSZ+bD.bn.get(vpLN-bI)
+    VP.dPC:=polyline.new(VP.pPC,false,false,xloc.bar_index,pocC,color(na),line.style_solid,pocW)
+    for i=0 to vpNR-1 by 1
+        bbp=2*vD.vb.get(i)-vD.vt.get(i)
+        vD.vd.set(i,vD.vd.get(i)+bbp*(bbp>0?1:-1))
+    VP.pcL:=vD.vt.indexof(vD.vt.max())
+    ttV=vD.vt.sum()*vpVA
+    va=vD.vt.get(VP.pcL)
+    VP.laP:=VP.pcL
+    VP.lbP:=VP.pcL
+    while va<ttV
+        if VP.lbP==0 and VP.laP==vpNR-1
+            break
+        vaP=0.
+        if VP.laP<vpNR-1
+            vaP:=vD.vt.get(VP.laP+1)
+        vbP=0.
+        if VP.lbP>0
+            vbP:=vD.vt.get(VP.lbP-1)
+        if vaP>=vbP
+            va:=va+vaP
+            VP.laP:=VP.laP+1
+        else
+            va:=va+vbP
+            VP.lbP:=VP.lbP-1
+    vaH=pLST+(VP.laP+1.)*pSTP
+    poc=pLST+(VP.pcL+.5)*pSTP
+    vaL=pLST+(VP.lbP+.0)*pSTP
+    pLN=vpLN>360?360:vpLN
+
+    vpHighVolumeRatio:=0.0
+    if vD.vt.sum()>0
+        vpHighVolumeCount=0
+        for i=0 to vpNR-1 by 1
+            if vD.vt.get(i)/vD.vt.max()>vpFilterThresh
+                vpHighVolumeCount+=1
+        vpHighVolumeRatio:=float(vpHighVolumeCount)/float(vpNR)
+
+    if vahS
+        f_drawLineX(VP.sI,vaH,vpRT?(vpSH?int(pLN*vpWD+vpHO):spSH?vpHO:0)+last_bar_index:last_bar_index,vaH,xloc.bar_index,extend.none,vahC,line.style_solid,vahW)
+    if pcSH=="Last Line"
+        f_drawLineX(VP.sI,poc,last_bar_index,poc,xloc.bar_index,extend.none,pocC,line.style_solid,pocW)
+    if vlSH
+        f_drawLineX(VP.sI,vaL,vpRT?(vpSH?int(pLN*vpWD+vpHO):spSH?vpHO:0)+last_bar_index:last_bar_index,vaL,xloc.bar_index,extend.none,valC,line.style_solid,valW)
+    if vaBG
+        VP.vp.push(box.new(VP.sI,vaL,last_bar_index,vaH,vBGC,1,line.style_dotted,bgcolor=vBGC))
+    if vpBG
+        VP.vp.push(box.new(VP.sI,pLST,last_bar_index,pHST,bgC,1,line.style_dotted,bgcolor=bgC))
+    if vpLV
+        f_drawLabelX(vpRT?(vpSH?int(pLN*vpWD+vpHO):spSH?vpHO:0)+last_bar_index:last_bar_index,pHST,str.tostring(pHST,format.mintick),color.new(chart.fg_color,89),vpRT?not vpSH and not spSH?label.style_label_left:label.style_label_down:label.style_label_left,chart.fg_color,rpS,"Profile High")
+        f_drawLabelX(vpRT?(vpSH?int(pLN*vpWD+vpHO):spSH?vpHO:0)+last_bar_index+(spSH?int(vD.vd.max()/vD.vt.max()*pLN*vpWD):0):last_bar_index,vaH,str.tostring(vaH,format.mintick),color.new(vahC,89),label.style_label_left,vahC,rpS,"Value Area High")
+        f_drawLabelX(vpRT?(vpSH?int(pLN*vpWD+vpHO):spSH?vpHO:0)+last_bar_index+(spSH?int(vD.vd.max()/vD.vt.max()*pLN*vpWD):0):last_bar_index,poc,str.tostring(poc,format.mintick),color.new(pocC,89),label.style_label_left,pocC,rpS,"Point of Control")
+        f_drawLabelX(vpRT?(vpSH?int(pLN*vpWD+vpHO):spSH?vpHO:0)+last_bar_index+(spSH?int(vD.vd.max()/vD.vt.max()*pLN*vpWD):0):last_bar_index,vaL,str.tostring(vaL,format.mintick),color.new(valC,89),label.style_label_left,valC,rpS,"Value Area Low")
+        f_drawLabelX(vpRT?(vpSH?int(pLN*vpWD+vpHO):spSH?vpHO:0)+last_bar_index:last_bar_index,pLST,str.tostring(pLST,format.mintick),color.new(chart.fg_color,89),vpRT?not vpSH and not spSH?label.style_label_left:label.style_label_up:label.style_label_left,chart.fg_color,rpS,"Profile Low")
+    if vpST
+        var table change=table.new(tPOS,2,10,border_width=3)
+        tC=chart.fg_color
+        table.cell(change,0,0,"Profile High",text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_left,text_size=ppLS)
+        table.cell(change,1,0,str.tostring(pHST,format.mintick),text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_right,text_size=ppLS)
+        table.cell(change,0,1,"Value Area High",text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_left,text_size=ppLS)
+        table.cell(change,1,1,str.tostring(vaH,format.mintick),text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_right,text_size=ppLS)
+        table.cell(change,0,2,"Point of Control",text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_left,text_size=ppLS)
+        table.cell(change,1,2,str.tostring(poc,format.mintick),text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_right,text_size=ppLS)
+        table.cell(change,0,3,"Value Area Low",text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_left,text_size=ppLS)
+        table.cell(change,1,3,str.tostring(vaL,format.mintick),text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_right,text_size=ppLS)
+        table.cell(change,0,4,"Profile Low",text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_left,text_size=ppLS)
+        table.cell(change,1,4,str.tostring(pLST,format.mintick),text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_right,text_size=ppLS)
+        table.cell(change,0,5,"Total Volume",text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_left,text_size=ppLS)
+        table.cell(change,1,5,str.tostring(vD.vt.sum(),format.volume),text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_right,text_size=ppLS)
+        table.cell(change,0,6,"Avg Volume per Bar",text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_left,text_size=ppLS)
+        table.cell(change,1,6,str.tostring(vD.vt.sum()/(vpLN+1),format.volume),text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_right,text_size=ppLS)
+        table.cell(change,0,7,"Volume MA",text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_left,text_size=ppLS)
+        table.cell(change,1,7,str.tostring(vSMA,format.volume),text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_right,text_size=ppLS)
+        table.cell(change,0,8,"Number of Bars",text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_left,text_size=ppLS)
+        table.cell(change,1,8,str.tostring(vpLN+1),text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_right,text_size=ppLS)
+        table.cell(change,0,9,"Data From",text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_left,text_size=ppLS)
+        table.cell(change,1,9,ltf+" TF",text_color=tC,bgcolor=color.new(tC,80),text_halign=text.align_right,text_size=ppLS)
+    if vgSH
+        var bool uNth=false
+        var bool lNth=false
+        noN=int(vpNR*vgNoN)
+        tVT=vD.vt.copy()
+        for index=1 to noN
+            tVT.unshift(vD.vt.max())
+            tVT.push(vD.vt.max())
+        for vn=0 to vpNR-1+2*noN
+            if vgSH and vn>=2*noN
+                for cVN=vn-2*noN to vn-noN-1
+                    if tVT.get(vn-noN)>=tVT.get(cVN)
+                        uNth:=false
+                        break
+                    else
+                        uNth:=true
+                for cVN=vn-noN+1 to vn
+                    if tVT.get(vn-noN)>=tVT.get(cVN)
+                        lNth:=false
+                        break
+                    else
+                        lNth:=true
+                if uNth and lNth
+                    VP.vp.push(box.new(bar_index[vpLN],pLST+(vn-2*noN+.1)*pSTP,vpRT?int(pLN*vpWD+vpHO)+last_bar_index:bar_index,pLST+(vn-2*noN+.9)*pSTP,color(na),bgcolor=vgC,xloc=xloc.bar_index))
+    for i=0 to vpNR-1 by 1
+        maxVol=math.max(vD.vt.max(),1e-10)
+        if vpSH
+            sBI=vpRT?int(pLN*vpWD+vpHO)+int(last_bar_index-vD.vb.get(i)/maxVol*pLN*vpWD):VP.sI
+            eBI=vpRT?int(pLN*vpWD+vpHO)+last_bar_index:int(sBI+vD.vb.get(i)/maxVol*pLN*vpWD)
+            VP.vp.push(box.new(sBI,pLST+(i+.1)*pSTP,eBI,pLST+(i+.9)*pSTP,color(na),bgcolor=i>=VP.lbP and i<=VP.laP?vaUC:vpUC))
+            sBI:=vpRT?sBI:eBI
+            eBI:=vpRT?sBI-int((vD.vt.get(i)-vD.vb.get(i))/maxVol*pLN*vpWD):sBI+int((vD.vt.get(i)-vD.vb.get(i))/maxVol*pLN*vpWD)
+            VP.vp.push(box.new(sBI,pLST+(i+.1)*pSTP,eBI,pLST+(i+.9)*pSTP,color(na),bgcolor=i>=VP.lbP and i<=VP.laP?vaDC:vpDC))
+        if spSH
+            sBI=vpRT?(vpSH?int(pLN*vpWD+vpHO):vpHO)+int(last_bar_index+vD.vd.get(i)/maxVol*pLN*vpWD):VP.sI
+            eBI=vpRT?(vpSH?int(pLN*vpWD+vpHO):vpHO)+last_bar_index:vpRL?int(sBI+vD.vd.get(i)/maxVol*pLN*vpWD):int(sBI-vD.vd.get(i)/maxVol*pLN*vpWD)
+            bbp=2*vD.vb.get(i)-vD.vt.get(i)
+            VP.vp.push(box.new(sBI+1,pLST+(i+.1)*pSTP,eBI+1,pLST+(i+.9)*pSTP,color(na),bgcolor=bbp>0?spUC:spDC))
+        if sdSH and vD.vt.get(i)/maxVol<sdTH
+            sdC=pLST+(i+0.50)*pSTP>pLST+(VP.pcL+.5)*pSTP?sdSC:sdDC
+            VP.vp.push(box.new(bar_index[vpLN],pLST+(i+1.)*pSTP,bar_index,pLST+(i+.0)*pSTP,color(na),bgcolor=sdC))
+
+pHSTv=ta.highest(high,vpLN<497?vpLN:496)
+pLSTv=ta.lowest(low,vpLN<497?vpLN:496)
+vHST=ta.highest(nzV,vpLN<497?vpLN:496)
+vMAR=nzV/vSMA
+if barstate.islast and not na(nzV) and vhSH and vSMA>0
+    pCHR=(pHSTv-pLSTv)/pHSTv
+    if VH.vh.size()>0
+        for i=0 to VH.vh.size()-1 by 1
+            line.delete(VH.vh.shift())
+    VH.pMA.clear()
+    VH.vMA.delete()
+    for bI=0 to vpLN by 1
+        if VH.vh.size()<500
+            VH.vh.push(line.new(bar_index[bI],vhLP?pHST+pHSTv*pCHR*vhVO:pLST-pLSTv*pCHR*vhVO,bar_index[bI],(vhLP?pHST+pHSTv*pCHR*vhVO:pLST-pLSTv*pCHR*vhVO)*(1+(vhLP?1:-1)*nzV[bI]/vHST*pCHR/vhHT),xloc.bar_index,extend.none,close[bI]>open[bI]?vhUC:vhDC,line.style_solid,2))
+            if vmaS and not na(vSMA[bI])
+                VH.pMA.push(chart.point.from_index(bar_index[bI],(vhLP?pHST+pHSTv*pCHR*vhVO:pLST-pLSTv*pCHR*vhVO)*(1+(vhLP?1:-1)*nzV[bI]/vHST*pCHR/vhHT/vMAR[bI])))
+    VH.vMA:=polyline.new(VH.pMA,false,false,xloc.bar_index,vmaC,color(na),line.style_solid,1)
+
+bullTrendBase=bullStructureLock and bullScore>=7 and bullStack and dmiBullAgree and psarBullAgree and clearBullStructure and (internalsBullTrend or rsiBull or mfBullPressure or ttmBull or vfiBullAgree or supertrendBull)
+bearTrendBase=bearStructureLock and bearScore>=7 and bearStack and dmiBearAgree and psarBearAgree and clearBearStructure and (internalsBearTrend or rsiBear or mfBearPressure or ttmBear or vfiBearAgree or supertrendBear)
+bullTrendNow=bullTrendBase or (bullScore>=6 and priceCloudBullPromote and psarBullAgree and (not supertrendUseAsTrendBoost or supertrendBull))
+bearTrendNow=bearTrendBase or (bearScore>=6 and priceCloudBearPromote and psarBearAgree and (not supertrendUseAsTrendBoost or supertrendBear))
+bullChopNow=bullStructureLock and not bullTrendNow and bullScore>=6 and psarBullAgree and bullMomentumSupport and not (bullScore>=7 and bullStack and dmiBullAgree)
+bearChopNow=bearStructureLock and not bearTrendNow and bearScore>=6 and psarBearAgree and bearMomentumSupport and not (bearScore>=7 and bearStack and dmiBearAgree)
+
+var int regimeState=0
+stayBullTrend=regimeState[1]==2 and bullStructureLock and psarBullAgree and bullScore>=6 and not bearTrendNow and (not supertrendUseAsTrendBoost or supertrendBull)
+stayBearTrend=regimeState[1]==-2 and bearStructureLock and psarBearAgree and bearScore>=6 and not bullTrendNow and (not supertrendUseAsTrendBoost or supertrendBear)
+regimeState:=bullTrendNow?2:bearTrendNow?-2:stayBullTrend?2:stayBearTrend?-2:bullChopNow and not bearChopNow?1:bearChopNow and not bullChopNow?-1:0
+bullRegime=regimeState>0
+bearRegime=regimeState<0
+bullTrend=regimeState==2
+bearTrend=regimeState==-2
+bullChop=regimeState==1
+bearChop=regimeState==-1
+neutralRegime=regimeState==0 and bullScore<4 and bearScore<4
+
+bullDirectionalChop=bullChop and supertrendBull
+bearDirectionalChop=bearChop and supertrendBear
+trueNeutralChop=neutralRegime or (bullChop and not supertrendBull) or (bearChop and not supertrendBear)
+chopTypeText=bullDirectionalChop?"BULL DIR CHOP":bearDirectionalChop?"BEAR DIR CHOP":trueNeutralChop?"TRUE CHOP":"TREND"
+
+bullRegimeStart=bullRegime and not bullRegime[1]
+bearRegimeStart=bearRegime and not bearRegime[1]
+bullTrendStart=regimeState==2 and regimeState[1]!=2
+bearTrendStart=regimeState==-2 and regimeState[1]!=-2
+
+bullTrendColor=color.new(#4c53af,0)
+bullChopColor=color.new(color.green,65)
+bearTrendColor=color.new(#980707,0)
+bearChopColor=color.new(color.red,65)
+neutralColor=color.new(color.yellow,70)
+regimeBgColor=bullTrend?bullTrendColor:bullChop?bullChopColor:bearTrend?bearTrendColor:bearChop?bearChopColor:neutralColor
+regimeBarColor=bullTrend?color.green:bullChop?color.lime:bearTrend?color.red:bearChop?color.maroon:color.yellow
+regimeText=bullTrend?"BULL TREND":bullChop?"BULL CHOP":bearTrend?"BEAR TREND":bearChop?"BEAR CHOP":"NEUTRAL"
+bgcolor(showRegimeBg?regimeBgColor:na)
+barcolor(showRegimeBars?regimeBarColor:na)
+
+var label regimeLbl=na
+if showRegimeLabel and barstate.islast
+    label.delete(regimeLbl)
+    regimeLbl:=label.new(bar_index,high,regimeText,style=label.style_label_down,color=bullTrend?color.green:bullChop?color.lime:bearTrend?color.red:bearChop?color.maroon:color.yellow,textcolor=color.black,size=size.small)
+
+priceBullScore=0
+priceBullScore+=(macdHist>0)?1:0
+priceBullScore+=(macdLine>signalLine)?1:0
+priceBullScore+=(vwMacdLine>vwSignalLine)?1:0
+priceBullScore+=(dpo>dpo[1])?1:0
+priceBullScore+=(close>vwap)?1:0
+priceBullScore+=(close>sma50)?1:0
+priceBearScore=0
+priceBearScore+=(macdHist<0)?1:0
+priceBearScore+=(macdLine<signalLine)?1:0
+priceBearScore+=(vwMacdLine<vwSignalLine)?1:0
+priceBearScore+=(dpo<dpo[1])?1:0
+priceBearScore+=(close<vwap)?1:0
+priceBearScore+=(close<sma50)?1:0
+priceBull=priceBullScore>=4 and priceBearScore<=2
+priceBear=priceBearScore>=4 and priceBullScore<=2
+priceCloudColor=priceBull?color.new(color.green,72):priceBear?color.new(color.red,72):color.new(color.yellow,82)
+ph=plot(showPriceCloud?high:na,"PriceHighCloud",display=display.none)
+pl=plot(showPriceCloud?low:na,"PriceLowCloud",display=display.none)
+fill(ph,pl,color=priceCloudColor,title="PriceRegimeCloud")
+
+var bool inTrade=false
+var int tradeSide=0
+var int entryBar=na
+
+bearishChop=(supertrendSellSignal and macdHist<=0 and fastBearDmi)
+recentLowerTouch=(ta.lowest(low,4)<=vwapM1) or (ta.lowest(low,4)<=vwapM2) or (ta.lowest(low,4)<=sma50)
+recentUpperTouch=(ta.highest(high,4)>=vwapP1) or (ta.highest(high,4)>=vwapP2) or (ta.highest(high,4)>=sma50)
+bullIgnition=histBull and macdBull and vwBull and dpoUp and ttmCurlUp and fastBullDmi and vfiBullFast
+bearIgnition=histBear and macdBear and vwBear and dpoDown and ttmCurlDown and fastBearDmi and vfiBearFast
+callEarly=not inTrade and rsiBull and bullIgnition and recentLowerTouch and (close>close[1] or close>high[1]) and (internalsBullTrend or internalsCallRev)
+putEarly=not inTrade and rsiBear and bearIgnition and recentUpperTouch and (close<close[1] or close<low[1]) and (internalsBearTrend or internalsPutRev)
+
+actualCallEntry=inRegular and not inTrade and rsiBull and (callEarly or callSignal or bullTrendStart or (bullRegime and bullIgnition and (addBullCont or addBullRev)) or (supertrendBuySignal and bullStructureLock and dmiBullAgree))
+actualPutEntry=inRegular and not inTrade and rsiBear and (putEarly or putSignal or bearTrendStart or bearishChop or (bearRegime and bearIgnition and (addBearCont or addBearRev)) or (supertrendSellSignal and bearStructureLock and dmiBearAgree))
+
+if actualCallEntry
+    strategy.entry("CALL",strategy.long)
+    inTrade:=true
+    tradeSide:=1
+    entryBar:=bar_index
+if actualPutEntry
+    strategy.entry("PUT",strategy.short)
+    inTrade:=true
+    tradeSide:=-1
+    entryBar:=bar_index
+
+barsInTrade=na(entryBar)?0:(bar_index-entryBar)
+exitCallCond=tradeSide==1 and (supertrendSellSignal or barsInTrade>=maxHoldBars)
+exitPutCond=tradeSide==-1 and (supertrendBuySignal or barsInTrade>=maxHoldBars)
+
+if exitCallCond
+    strategy.close("CALL")
+    inTrade:=false
+    tradeSide:=0
+    entryBar:=na
+if exitPutCond
+    strategy.close("PUT")
+    inTrade:=false
+    tradeSide:=0
+    entryBar:=na
+
+var string activeMode="WAIT"
+var color activeModeColor=color.black
+if callSignal
+    activeMode:=callMode
+    activeModeColor:=color.green
+else if putSignal
+    activeMode:=putMode
+    activeModeColor:=color.red
+else if bullTrend and bullTotal>bearTotal
+    activeMode:=supertrendBuySignal?"CALL-ST FLIP":callReversal?"CALL-REV RUN":"CALL-TREND"
+    activeModeColor:=color.green
+else if bearTrend and bearTotal>bullTotal
+    activeMode:=supertrendSellSignal?"PUT-ST FLIP":putReversal?"PUT-REV RUN":"PUT-TREND"
+    activeModeColor:=color.red
+else if bullDirectionalChop and bullTotal>bearTotal
+    activeMode:="CALL-DIR-CHOP"
+    activeModeColor:=color.lime
+else if bearDirectionalChop and bearTotal>bullTotal
+    activeMode:="PUT-DIR-CHOP"
+    activeModeColor:=color.maroon
+else if trueNeutralChop
+    activeMode:="TRUE-CHOP"
+    activeModeColor:=color.orange
+else if bullStructureLock and bullMomentumSupport and bullTotal>=bearTotal
+    activeMode:="CALL-BIAS"
+    activeModeColor:=color.green
+else if bearStructureLock and bearMomentumSupport and bearTotal>=bullTotal
+    activeMode:="PUT-BIAS"
+    activeModeColor:=color.red
+else
+    activeMode:="WAIT"
+    activeModeColor:=color.black
+
+plot(vwap,"VWAP",color=color.yellow,linewidth=2)
+plot(showBands?vwapP1:na,"VWAP+1",color=color.new(color.blue,0))
+plot(showBands?vwapP2:na,"VWAP+2",color=color.new(color.blue,35))
+plot(showBands?vwapM1:na,"VWAP-1",color=color.new(color.orange,0))
+plot(showBands?vwapM2:na,"VWAP-2",color=color.new(color.orange,35))
+plot(sma50,"SMA50",color=color.white,linewidth=2)
+plot(showPremarketLevels and inRegular?pmHigh:na,"Premarket High",color=color.fuchsia,linewidth=2,style=plot.style_linebr)
+plot(showPremarketLevels and inRegular?pmLow:na,"Premarket Low",color=color.aqua,linewidth=2,style=plot.style_linebr)
+plotshape(showSignals and callSignal,title="CALL",style=shape.labelup,location=location.belowbar,color=color.green,text="CALL",textcolor=color.white,size=size.small)
+plotshape(showSignals and putSignal,title="PUT",style=shape.labeldown,location=location.abovebar,color=color.red,text="PUT",textcolor=color.white,size=size.small)
+plotshape(showSignals and supertrendBuySignal?low:na,title="ST Buy",style=shape.circle,location=location.absolute,color=color.new(color.green,0),size=size.tiny)
+plotshape(showSignals and supertrendSellSignal?high:na,title="ST Sell",style=shape.circle,location=location.absolute,color=color.new(color.red,0),size=size.tiny)
+
+if showModeLabels and callSignal
+    label.new(bar_index,low,callMode,style=label.style_label_up,color=color.new(color.green,65),textcolor=color.white,size=size.tiny)
+if showModeLabels and putSignal
+    label.new(bar_index,high,putMode,style=label.style_label_down,color=color.new(color.red,65),textcolor=color.white,size=size.tiny)
+
+var table dash=table.new(position.top_right,2,19,border_width=1)
+if showDashboard and barstate.islast
+    table.cell(dash,0,0,"REGIME",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,0,regimeText,bgcolor=bullTrend?color.green:bullChop?color.lime:bearTrend?color.red:bearChop?color.maroon:color.yellow,text_color=color.black)
+    table.cell(dash,0,1,"CONF",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,1,str.tostring(confidencePct)+"% "+scoreText(totalScore),bgcolor=color.black,text_color=color.white)
+    table.cell(dash,0,2,"VP RATIO",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,2,str.tostring(math.round(vpHighVolumeRatio*100))+"%",bgcolor=vpHighVolumeRatio>0.6?color.red:vpHighVolumeRatio<0.4?color.green:color.yellow,text_color=color.black)
+    table.cell(dash,0,3,"ST DIR",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,3,supertrendText,bgcolor=supertrendBull?green:red,text_color=color.black)
+    table.cell(dash,0,4,"BULL SCORE",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,4,str.tostring(bullTotal),bgcolor=bullTotal>bearTotal?color.green:color.red,text_color=color.black)
+    table.cell(dash,0,5,"BEAR SCORE",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,5,str.tostring(bearTotal),bgcolor=bearTotal>bullTotal?color.red:color.green,text_color=color.black)
+    table.cell(dash,0,6,"MACD",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,6,macdAlignText,bgcolor=macdBullAgree?color.green:macdBearAgree?color.red:color.yellow,text_color=color.black)
+    table.cell(dash,0,7,"DMI",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,7,dmiAlignText,bgcolor=dmiBullAgree?color.green:dmiBearAgree?color.red:color.yellow,text_color=color.black)
+    table.cell(dash,0,8,"PSAR",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,8,psarAlignText,bgcolor=psarBullAgree?color.green:psarBearAgree?color.red:color.yellow,text_color=color.black)
+    table.cell(dash,0,9,"VFI",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,9,vfiAlignText,bgcolor=vfiBullAgree?color.green:vfiBearAgree?color.red:color.yellow,text_color=color.black)
+    table.cell(dash,0,10,"$ADD",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,10,addBullCont?"BULL":"BEAR",bgcolor=addBullCont?color.green:color.red,text_color=color.black)
+    table.cell(dash,0,11,"$TRIN",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,11,trinBullCont?"BULL":"BEAR",bgcolor=trinBullCont?color.green:color.red,text_color=color.black)
+    table.cell(dash,0,12,"$VOLD",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,12,voldBullCont?"BULL":"BEAR",bgcolor=voldBullCont?color.green:color.red,text_color=color.black)
+    table.cell(dash,0,13,"RSI",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,13,str.tostring(math.round(rsiVal)),bgcolor=rsiBull?color.green:rsiBear?color.red:color.yellow,text_color=color.black)
+    table.cell(dash,0,14,"MF INTER",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,14,str.tostring(math.round(mfIntermediate)),bgcolor=mfBull?color.green:mfBear?color.red:color.yellow,text_color=color.black)
+    table.cell(dash,0,15,"STRUCTURE",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,15,bullStructureLock?"BULL":bearStructureLock?"BEAR":"NEUTRAL",bgcolor=bullStructureLock?color.green:bearStructureLock?color.red:color.yellow,text_color=color.black)
+    table.cell(dash,0,16,"CHOP TYPE",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,16,chopTypeText,bgcolor=bullDirectionalChop?color.lime:bearDirectionalChop?color.maroon:trueNeutralChop?color.orange:color.blue,text_color=color.black)
+    table.cell(dash,0,17,"ST BOOST",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,17,supertrendUseAsTrendBoost?"ON":"OFF",bgcolor=supertrendUseAsTrendBoost?color.green:color.red,text_color=color.black)
+    table.cell(dash,0,18,"MODE",bgcolor=color.black,text_color=color.white)
+    table.cell(dash,1,18,activeMode,bgcolor=activeModeColor,text_color=color.white)
+
+alertcondition(actualCallEntry,"CALL Entry","CALL Entry")
+alertcondition(actualPutEntry,"PUT Entry","PUT Entry")
+alertcondition(exitCallCond,"CALL Exit","CALL Exit")
+alertcondition(exitPutCond,"PUT Exit","PUT Exit")
+alertcondition(bullRegimeStart,"Bullish Regime Start","Bullish Regime Start")
+alertcondition(bearRegimeStart,"Bearish Regime Start","Bearish Regime Start")
+alertcondition(supertrendBuySignal,"SuperTrend Buy","SuperTrend Buy")
+alertcondition(supertrendSellSignal,"SuperTrend Sell","SuperTrend Sell")
